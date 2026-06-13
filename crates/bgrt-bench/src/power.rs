@@ -1,8 +1,10 @@
 //! Parsed `powermetrics` statistics.
 //!
-//! The data type and parser are cross-platform (and unit-tested); only the
-//! sampling that produces the text lives in the macOS-only `power_macos` module.
-//! Numeric fields are averaged across all sample blocks in the input.
+//! [`PowerStats`] and its accessor methods are cross-platform (used in runner
+//! results on all OSes, though always `None` off macOS). The parser
+//! (`PowerStats::parse`) and its helpers are compiled on macOS and in test
+//! builds only; the sampler that produces the raw text lives in the macOS-only
+//! `power_macos` module. Numeric fields are averaged across all sample blocks.
 
 use std::time::Duration;
 
@@ -16,12 +18,14 @@ pub struct PowerStats {
     p_freq_mhz: Option<f64>,
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy)]
 enum Cluster {
     E,
     P,
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl PowerStats {
     /// Parse `powermetrics --samplers cpu_power` output, averaging across samples.
     pub fn parse(text: &str) -> Self {
@@ -59,7 +63,9 @@ impl PowerStats {
             p_residency_pct: p_res.avg(),
         }
     }
+}
 
+impl PowerStats {
     /// Average CPU power in milliwatts, if present.
     pub fn cpu_power_mw(&self) -> Option<f64> {
         self.cpu_power_mw
@@ -101,11 +107,13 @@ impl PowerStats {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 struct Acc {
     sum: f64,
     n: u32,
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl Acc {
     fn new() -> Self {
         Self { sum: 0.0, n: 0 }
@@ -119,6 +127,7 @@ impl Acc {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn freq_acc<'a>(kind: Cluster, e: &'a mut Acc, p: &'a mut Acc) -> &'a mut Acc {
     match kind {
         Cluster::E => e,
@@ -126,6 +135,7 @@ fn freq_acc<'a>(kind: Cluster, e: &'a mut Acc, p: &'a mut Acc) -> &'a mut Acc {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn cluster_kind(line: &str) -> Option<Cluster> {
     if line.starts_with("E-Cluster") {
         Some(Cluster::E)
@@ -136,11 +146,13 @@ fn cluster_kind(line: &str) -> Option<Cluster> {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn metric_after<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     line.find(key).map(|i| &line[i + key.len()..])
 }
 
 /// Parse the leading numeric run (digits, `.`, `-`) of a string like `"1024 MHz"`.
+#[cfg(any(target_os = "macos", test))]
 fn leading_number(s: &str) -> Option<f64> {
     let s = s.trim();
     let end = s

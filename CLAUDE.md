@@ -50,7 +50,7 @@ Cargo workspace, edition 2024, `rust-version = 1.85.0`.
 - **`bgrt`** — the library.
   - `qos` — `QosClass { Background, Utility, Default }`, the energy class applied per thread.
   - `backend/` — per-OS dispatch (`macos.rs`, `linux.rs`, `windows.rs`), each exposing `apply(QosClass)` acting on the *current* thread. macOS = `pthread_set_qos_class_self_np`; Linux = `setpriority`; Windows = EcoQoS via `SetThreadInformation` + `SetThreadPriority`. A no-op fallback covers other platforms.
-  - `runtime` — `Builder` → `Runtime` wrapping a multi-thread tokio runtime; applies `QosClass` to every runtime thread (workers + blocking pool) via `on_thread_start`. `spawn` / `spawn_blocking` / `block_on` / `handle` / `qos`.
+  - `runtime` — `RuntimeBuilder` → `Runtime` wrapping a multi-thread tokio runtime; applies `QosClass` to every runtime thread (workers + blocking pool) via `on_thread_start`. `spawn` / `spawn_blocking` / `block_on` / `handle` / `qos`.
   - `thread` — `spawn_thread` (infallible, like `std::thread::spawn`) and `ThreadBuilder` (`io::Result`, like `std::thread::Builder`); applies QoS at the top of the thread body.
   - `topology` — E-core detection (Linux sysfs `cpu_capacity`) + `sched_setaffinity` pinning; no-op off Linux. `pin_efficiency_cores` is opt-in.
   - `telemetry` *(feature `telemetry`, off by default)* — measurement primitives: `sample()` (cpu/core-type/freq), `energy_uj()`/`EnergyMeter`, `Aggregate`. Graceful `None`/`Unknown` where unavailable.
@@ -85,14 +85,14 @@ the bottom of the source file with:
 #[path = "lib_tests.rs"]
 mod lib_tests;
 ```
-Integration tests live in `crates/<crate>/tests/`.
+Integration tests live in `crates/<crate>/tests/`. The `bgrt-bench` integration test (`crates/bgrt-bench/tests/comparison.rs`) runs the harness binary end-to-end via `CARGO_BIN_EXE_bgrt-bench` and asserts background peak MHz ≤ default.
 
 **Test naming:** `subject____condition____result` — exactly four underscores
 between segments. Because consecutive underscores trip `non_snake_case`, every
 `*_tests.rs` file carries `#![allow(non_snake_case)]` at the top.
 
 **Test helpers:** `rstest` for parameterized tests, `tempfile::TempDir` for
-filesystem tests.
+filesystem tests. Platform-specific FFI introspection helpers (e.g. `current_qos()` on macOS, `current_nice()` on Linux) live in `src/test_support.rs` and are shared across all `*_tests.rs` modules via `use crate::test_support::*`.
 
 **No `.unwrap()` / `.expect()` in production code** — use `?`. `clippy.toml`
 allows them in tests only (`allow-unwrap-in-tests = true`). Workspace lints also
