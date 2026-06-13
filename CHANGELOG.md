@@ -8,6 +8,23 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Phase 1 — QoS backends — 2026-06-13
+- `apply(QosClass)` now does real work per OS (was no-op):
+  - **macOS** — `pthread_set_qos_class_self_np`: Background→`QOS_CLASS_BACKGROUND`
+    (0x09), Utility→`QOS_CLASS_UTILITY` (0x11), Default→`QOS_CLASS_DEFAULT` (0x15).
+  - **Linux** — `setpriority`: nice 19 / 10 / 0 (weighted-fair, not `SCHED_IDLE`).
+  - **Windows** — EcoQoS via `SetThreadInformation` + `SetThreadPriority`
+    (below-normal / normal); Default clears EcoQoS.
+- Read-back tests per OS (macOS `pthread_get_qos_class_np`, Linux `getpriority`,
+  Windows `GetThreadPriority`), each on a dedicated thread.
+- **Scope change:** efficiency-core affinity deferred to Phase 2 (with the
+  opt-in `pin_efficiency_cores` builder option + `topology` module); `apply`
+  stays the always-unprivileged nice/QoS/priority part.
+- **Verified:** macOS — `cargo test -p bgrt` (7 tests) + clippy `-Dwarnings`
+  clean. Linux & Windows — `cargo check --tests` + clippy `-Dwarnings` clean
+  cross-target (`x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`); runtime
+  behavior on those OSes still pending CI / real hardware.
+
 ### Phase 0 — Workspace scaffold — 2026-06-13
 - Cargo workspace (edition 2024, `rust-version = 1.85.0`, resolver 3): `bgrt`
   library + `bgrt-bench` binary; `clippy.toml` (`allow-unwrap-in-tests`),

@@ -7,7 +7,9 @@
 use bgrt::QosClass;
 
 fn main() {
-    println!("bgrt-bench: comparison harness — not yet implemented (see docs/ROADMAP.md, Phase 5).");
+    println!(
+        "bgrt-bench: comparison harness — not yet implemented (see docs/ROADMAP.md, Phase 5)."
+    );
 
     // Exercise the library so the dependency wiring is real from Phase 0.
     match bgrt::apply(QosClass::Default) {

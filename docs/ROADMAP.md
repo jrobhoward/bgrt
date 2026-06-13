@@ -151,7 +151,7 @@ Dev: `rstest`, `tempfile`. Release profile: `strip`, `lto`, `codegen-units = 1`.
 | Phase | Title                                   | Status |
 |------:|-----------------------------------------|--------|
 | 0 | Workspace scaffold + conventions            | ✅ Done (macOS verified; Linux/Windows backends are cfg-gated no-ops) |
-| 1 | QoS backends (macOS / Windows / Linux)      | ⬜ Not started |
+| 1 | QoS backends (macOS / Windows / Linux)      | ✅ Done (macOS run-verified; Linux/Windows cross-check + clippy clean). Affinity deferred to Phase 2. |
 | 2 | `Runtime` — tokio wrapper                    | ⬜ Not started |
 | 3 | Quiet thread + blocking spawn API           | ⬜ Not started |
 | 4 | Telemetry (core / frequency / power)        | ⬜ Not started |
@@ -170,22 +170,31 @@ Legend: ⬜ not started · 🔶 in progress · ✅ done. Update this table **and
 - **DoD:** `cargo build`/`clippy --tests` clean on macOS, Linux, Windows; trivial
   tests pass (e.g. `QosClass` debug/eq); CHANGELOG seeded.
 
-### Phase 1 — QoS backends
-- **macOS:** `pthread_set_qos_class_self_np(BACKGROUND|UTILITY, 0)` FFI.
-- **Linux:** `setpriority(PRIO_PROCESS, 0, nice)`; for `Background`,
-  `sched_setaffinity` to the detected E-core set (via `topology`); detect E-cores
-  from `/sys/.../cpu*/cpu_capacity` (fallback: all cores → affinity no-op).
-- **Windows:** `SetThreadInformation(.., ThreadPowerThrottling, EXECUTION_SPEED)`
-  + `SetThreadPriority(BELOW_NORMAL|NORMAL)` via `windows-sys`.
-- `qos::apply(class)` acts on the current thread, unprivileged, idempotent.
-- **DoD:** `apply` returns `Ok` as a normal user on each OS; where read-back
-  exists, a test asserts the effect (Linux: `getpriority` == expected nice;
-  affinity mask ⊆ E-core set). Platform tests `cfg`-gated.
+### Phase 1 — QoS backends — ✅ Done
+- **macOS:** `pthread_set_qos_class_self_np(BACKGROUND|UTILITY|DEFAULT, 0)` FFI
+  (declared against libSystem). Read-back tests via `pthread_get_qos_class_np`.
+- **Linux:** `setpriority(PRIO_PROCESS, 0, nice)` — `nice(19|10|0)`, weighted-fair
+  (no `SCHED_IDLE`). Read-back tests via `getpriority`.
+- **Windows:** EcoQoS (`SetThreadInformation(.., ThreadPowerThrottling,
+  EXECUTION_SPEED)`) + `SetThreadPriority(BELOW_NORMAL|NORMAL)` via `windows-sys`;
+  `Default` clears EcoQoS. Priority read-back tests via `GetThreadPriority`.
+- `qos::apply(class)` acts on the current thread, unprivileged.
+- **Scope note:** efficiency-core **affinity** moved to Phase 2 (it belongs with
+  the opt-in `pin_efficiency_cores` builder option + the `topology` module), so
+  `apply` stays the always-safe nice/QoS/priority part.
+- **DoD met:** macOS run-verified (QoS read-back asserts 0x09/0x11/0x15); Linux &
+  Windows cross-compiled (`cargo check --tests`) and clippy-clean on their
+  targets; platform tests `cfg`-gated. *Linux/Windows runtime behavior pending
+  CI / real hardware.*
 
 ### Phase 2 — `Runtime` (tokio wrapper)
 - `Builder` (qos, worker_threads default 1, pin_efficiency_cores, thread_name) →
   `Runtime` built from `tokio::runtime::Builder` with the `on_thread_start` hook.
 - `spawn`, `spawn_blocking`, `handle`, `block_on`.
+- **`topology` + affinity (moved from Phase 1):** detect E-cores (Linux sysfs
+  `cpu_capacity`; macOS `hw.perflevel*`; Windows cpu-set efficiency class); when
+  `pin_efficiency_cores(true)`, the thread-start hook also restricts affinity to
+  the E-core set (Linux `sched_setaffinity`). Opt-in and defaults off.
 - Document + test the two-runtime pattern (normal + bgrt in one process).
 - **DoD:** a task spawned on a `Background` runtime runs to completion; a test
   *inside* a spawned task asserts the worker thread carries the QoS (Linux:
