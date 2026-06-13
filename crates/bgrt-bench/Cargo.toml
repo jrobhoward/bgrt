@@ -1,0 +1,15 @@
+[package]
+name = "bgrt-bench"
+description = "Comparison harness: time, core placement, frequency, and power across bgrt executors."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+bgrt = { workspace = true }
