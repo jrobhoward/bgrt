@@ -8,6 +8,24 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Phase 2 — Runtime (tokio wrapper) — 2026-06-13
+- `Builder` → `Runtime`: wraps a multi-thread tokio runtime, applying the chosen
+  `QosClass` to every runtime thread via `on_thread_start` (best-effort: warns on
+  failure, never aborts). `Builder` knobs: `qos` (default `Background`),
+  `worker_threads` (default 1, clamps 0→1 so tokio can't panic), `thread_name`,
+  `pin_efficiency_cores` (opt-in). `Runtime`: `spawn`, `spawn_blocking`,
+  `block_on`, `handle`, `qos`.
+- New `topology` module: Linux E-core detection via sysfs `cpu_capacity`
+  (empty when unavailable/homogeneous) + `sched_setaffinity` pinning of the
+  current thread; no-op on macOS/Windows (their QoS/EcoQoS places work).
+- Added `Error::Runtime`. tokio added as a `bgrt` dependency (rt-multi-thread, time).
+- **Resolved open question:** tokio's `on_thread_start` *does* cover the blocking
+  pool — a macOS test confirms `spawn_blocking` work is classified. No workaround.
+- **Verified:** macOS — `cargo test -p bgrt` (15 unit + 1 doctest), incl. worker-
+  and blocking-pool QoS read-back; clippy `-Dwarnings`; `cargo doc`. Linux &
+  Windows — clippy `-Dwarnings` clean cross-target; their runtime read-back tests
+  (`getpriority`, etc.) run on CI / native hardware.
+
 ### Review & hardening — 2026-06-13
 - Confirmed production code is panic-free (no `unwrap`/`expect`/`panic!`/indexing;
   every FFI return code is checked into `Result`). `unwrap` remains test-only.

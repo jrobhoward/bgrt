@@ -152,7 +152,7 @@ Dev: `rstest`, `tempfile`. Release profile: `strip`, `lto`, `codegen-units = 1`.
 |------:|-----------------------------------------|--------|
 | 0 | Workspace scaffold + conventions            | ✅ Done (macOS verified; Linux/Windows backends are cfg-gated no-ops) |
 | 1 | QoS backends (macOS / Windows / Linux)      | ✅ Done (macOS run-verified; Linux/Windows cross-check + clippy clean). Affinity deferred to Phase 2. |
-| 2 | `Runtime` — tokio wrapper                    | ⬜ Not started |
+| 2 | `Runtime` — tokio wrapper                    | ✅ Done (macOS run-verified incl. blocking pool; Linux/Windows cross-check clean) |
 | 3 | Quiet thread + blocking spawn API           | ⬜ Not started |
 | 4 | Telemetry (core / frequency / power)        | ⬜ Not started |
 | 5 | Comparison harness (`bgrt-bench`)           | ⬜ Not started |
@@ -252,8 +252,9 @@ Legend: ⬜ not started · 🔶 in progress · ✅ done. Update this table **and
 
 ## Open questions / risks (revisit during implementation)
 
-- **tokio `on_thread_start` & the blocking pool** — confirm it fires for blocking
-  threads; if not, classify within `spawn_blocking`. (Phase 2/3.)
+- ~~**tokio `on_thread_start` & the blocking pool**~~ — ✅ Resolved (Phase 2): the
+  hook fires for blocking-pool threads too; a macOS test confirms `spawn_blocking`
+  work carries the runtime's QoS. No `spawn_blocking`-side workaround needed.
 - **macOS core placement** has no per-thread API → depends on `powermetrics`
   (root) for the harness; the *library* needs no privilege. (Phase 4.)
 - **RAPL access on Linux** is frequently restricted post-CVE; the harness must

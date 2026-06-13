@@ -8,18 +8,21 @@
 //! classes, Windows EcoQoS, Linux `nice` — and runs as a regular (non-admin)
 //! user.
 //!
-//! Today `bgrt` exposes [`apply`], which classifies the **current** thread (see
-//! [`QosClass`] for the per-OS mapping). A tokio runtime wrapper, a quiet-thread
-//! spawner, and a measurement harness land in later phases — see
-//! `docs/ROADMAP.md`.
+//! `bgrt` provides an energy-classified async runtime — build one with
+//! [`Builder`] and schedule futures onto it with [`Runtime::spawn`] — plus
+//! [`apply`], which classifies the **current** thread directly. A quiet-thread
+//! spawner and a measurement harness land in later phases (see `docs/ROADMAP.md`).
 #![warn(missing_docs)]
 
 mod backend;
 pub mod error;
 mod qos;
+mod runtime;
+mod topology;
 
 pub use error::Error;
 pub use qos::QosClass;
+pub use runtime::{Builder, Runtime};
 
 /// Apply an energy [`QosClass`] to the **current** thread.
 ///
