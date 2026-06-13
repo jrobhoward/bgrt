@@ -16,12 +16,13 @@ it onto a quiet executor.
   crawls forward under load (not run-only-when-idle).
 - **Cross-platform** — macOS, Windows, Linux, including big.LITTLE / P+E CPUs.
 
-> **Status:** early development. The plan lives in
-> [`docs/ROADMAP.md`](docs/ROADMAP.md) and project state in
-> [`CHANGELOG.md`](CHANGELOG.md). Phase 0 (scaffold) is in place; the QoS
-> backends, runtime wrapper, and measurement harness land phase by phase.
+> **Status:** the library (QoS backends, runtime wrapper, quiet-thread spawner)
+> and the measurement harness are implemented and tested; macOS is run-verified
+> (see the M1 numbers below), Linux/Windows are cross-compiled and lint-clean
+> pending CI on real hardware. Plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); state:
+> [`CHANGELOG.md`](CHANGELOG.md).
 
-## Intended usage
+## Usage
 
 ```rust
 use bgrt::QosClass;
@@ -40,8 +41,15 @@ let jh = bgrt::spawn_thread(QosClass::Background, || { /* CPU-bound loop */ });
 bgrt::apply(QosClass::Utility)?;
 ```
 
-Run some work normally and other work quietly by keeping a normal tokio runtime
-*and* a `bgrt` runtime in the same process, then spawning onto the right one.
+Run some work normally and other work quietly by keeping a `Default`-class
+runtime *and* a `Background`-class `bgrt` runtime in the same process, then
+spawning onto the right one.
+
+Runnable examples (`cargo run --example <name> -p bgrt`):
+
+- [`background_task`](crates/bgrt/examples/background_task.rs) — a quiet async task.
+- [`mixed_runtimes`](crates/bgrt/examples/mixed_runtimes.rs) — foreground + background runtimes together.
+- [`quiet_threads`](crates/bgrt/examples/quiet_threads.rs) — `spawn_thread` and `ThreadBuilder`.
 
 ## QoS classes
 
@@ -57,21 +65,45 @@ Run some work normally and other work quietly by keeping a normal tokio runtime
 execution time, core placement, frequency, and energy:
 
 ```bash
-cargo run --release -p bgrt-bench -- --duration 5 --workers 1
+cargo run --release -p bgrt-bench -- --duration 3
 # executor              wall_ms       work      work/s     %E  mean_mhz  max_mhz  energy_j
-# default                  5000      25800        5160    n/a       n/a      n/a       n/a
-# background               5000      10300        2060    n/a       n/a      n/a       n/a
-# background-threads       5000      10800        2160    n/a       n/a      n/a       n/a
+# default                  3000      15707        5235    n/a       n/a      n/a       n/a
+# utility                  3000      15930        5310    n/a       n/a      n/a       n/a
+# background               3000       4925        1641    n/a       n/a      n/a       n/a
+# background-threads       3000       4965        1655    n/a       n/a      n/a       n/a
 ```
 
 The headline signal is **`work/s` (throughput)**: the runs are duration-bounded,
 so a quieter executor completes *less* work in the same wall time. The example
-above (macOS, no sudo) shows Background doing ~40% of Default's work — the
+above (macOS, no sudo) shows Background doing ~31% of Default's work — the
 efficiency-core confinement, measured without any privileged telemetry.
 
 Flags: `--executors default,utility,background,background-threads` (subset/order),
 `--workers <n>`, `--format json`, `--interval <ms>` (sampling), `--pin` (Linux
 E-core affinity), `--mac-power` (macOS `%E`/frequency/power via `powermetrics`).
+
+### Measured on an Apple M1 (with `sudo … --mac-power`)
+
+```text
+executor              wall_ms       work      work/s     %E  mean_mhz  max_mhz  energy_j
+default                  3000      15865        5288   37.6      2124     2751     3.482
+utility                  3000      15676        5225   36.3      2095     2719     3.335
+background               3000       5106        1702   99.8      1028     1029     0.275
+background-threads       3000       5213        1737   98.7      1124     1132     0.491
+verdict: background peak frequency ≤ (stayed cool) default
+```
+
+`Background` work ran **99.8% on efficiency cores** (vs 37.6% for `Default`),
+peaked at **1029 MHz vs 2751 MHz**, and drew **~12× less CPU power** (0.275 J vs
+3.482 J over the same 3 s) — at ~32% of the throughput. Per unit of work that's
+still ~4× less energy. This is the "stay on the efficiency cores, keep the clocks
+and fans down" goal, measured.
+
+> `--mac-power` figures (`%E`, frequency, energy) come from `powermetrics`, which
+> reports **system-wide** CPU state, not per-thread — so they reflect total CPU
+> activity during the run (the right lens for fans/battery, but noisier if other
+> apps are busy). The privilege-free **`work/s`** column is the cleanest
+> per-executor signal.
 
 > **macOS note (QoS promotion):** synchronously waiting on a background thread
 > from a higher-QoS thread promotes it *off* the efficiency cores

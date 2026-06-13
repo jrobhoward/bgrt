@@ -8,6 +8,20 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Phase 6 — Docs, examples, polish — 2026-06-13
+- Added runnable examples: `background_task`, `mixed_runtimes`, `quiet_threads`
+  (`cargo run --example <name> -p bgrt`); all run and pass
+  `clippy --all-targets -- -Dwarnings`.
+- README: "early development" → real status; "Intended usage" → "Usage" with an
+  examples list; folded in the **Apple M1** measured results (Background ran 99.8%
+  on E-cores at ~1029 MHz and drew ~12× less CPU power than Default) plus a
+  system-wide-telemetry caveat.
+- CLAUDE.md: refreshed architecture (all modules: runtime/thread/topology/
+  telemetry + bench workload/runner/report/power) and commands (telemetry tests,
+  cross-target clippy, examples, sudo `--mac-power`).
+- **Verified:** `cargo clippy --workspace --all-targets -- -Dwarnings`, examples
+  run, `cargo test --workspace`, `cargo doc` all clean.
+
 ### Phase 5.1 — Throughput, powermetrics, macOS finding — 2026-06-13
 - **Throughput metric:** the workload now counts work units completed and reports
   `work` + `work/s`. This makes the energy/perf tradeoff visible **unprivileged on

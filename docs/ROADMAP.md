@@ -156,7 +156,7 @@ Dev: `rstest`, `tempfile`. Release profile: `strip`, `lto`, `codegen-units = 1`.
 | 3 | Quiet thread + blocking spawn API           | ✅ Done (macOS run-verified; Linux/Windows cross-check clean) |
 | 4 | Telemetry (core / frequency / power)        | ✅ Done (primitives; Sampler orchestration + macOS powermetrics → Phase 5) |
 | 5 | Comparison harness (`bgrt-bench`)           | ✅ Done (table/JSON + verdict + integration test; macOS run, Linux/Windows cross-check) |
-| 6 | Docs, examples, polish                      | ⬜ Not started |
+| 6 | Docs, examples, polish                      | ✅ Done (examples run/lint clean; README incl. M1 results; CLAUDE.md refreshed) |
 
 Legend: ⬜ not started · 🔶 in progress · ✅ done. Update this table **and**
 `CHANGELOG.md` as each phase lands.
@@ -263,7 +263,14 @@ integration test), Linux/Windows clippy clean cross-target.*
 - **DoD:** `cargo run -p bgrt-bench` prints the comparison on dev hardware
   (M1 + Linux/AMD); the assertions hold or skip cleanly where unsupported.
 
-### Phase 6 — Docs, examples, polish
+### Phase 6 — Docs, examples, polish — ✅ Done
+*Shipped: `crates/bgrt/examples/{background_task,mixed_runtimes,quiet_threads}.rs`
+(run + `clippy --all-targets` clean); README "Usage" + a real **Apple M1** results
+table (Background: 99.8% E-core, ~12× less power); CLAUDE.md architecture/commands
+refreshed for the full module set. Remaining (post-plan): Windows E/P
+classification, and CI to execute the Linux/Windows paths on real hardware.*
+
+#### Original outline
 - `README.md` (install, the QoS table, usage, privilege notes); `CLAUDE.md`
   (architecture, commands, conventions); `examples/` (`background_task.rs`,
   `mixed_runtimes.rs`, `quiet_threads.rs`).

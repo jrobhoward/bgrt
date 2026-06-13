@@ -19,16 +19,28 @@ for running project state.
 cargo build --workspace
 cargo build --workspace --release
 
-# Test
+# Test (telemetry tests run when the feature is on, e.g. via the bench)
 cargo test --workspace
 cargo test -p bgrt                                  # single crate
+cargo test -p bgrt --features telemetry             # incl. telemetry module
 cargo test -p bgrt -- some____test____name          # single test
 
 # Lint (must be clean before any phase is considered done)
 cargo clippy --workspace --tests -- -Dwarnings
+cargo clippy --workspace --all-targets -- -Dwarnings   # also lints examples
 
-# Run the comparison harness
-cargo run -p bgrt-bench
+# Cross-compile checks for the other OS backends (no linker needed for `check`)
+cargo clippy -p bgrt --tests --target x86_64-unknown-linux-gnu -- -Dwarnings
+cargo clippy -p bgrt --tests --target x86_64-pc-windows-msvc -- -Dwarnings
+
+# Examples
+cargo run --example background_task -p bgrt
+cargo run --example mixed_runtimes -p bgrt
+cargo run --example quiet_threads -p bgrt
+
+# Comparison harness (sudo + --mac-power on macOS for %E/freq/power)
+cargo run --release -p bgrt-bench -- --duration 3
+sudo ./target/release/bgrt-bench --duration 3 --mac-power
 ```
 
 ## Architecture
@@ -37,10 +49,19 @@ Cargo workspace, edition 2024, `rust-version = 1.85.0`.
 
 - **`bgrt`** — the library.
   - `qos` — `QosClass { Background, Utility, Default }`, the energy class applied per thread.
-  - `backend/` — per-OS dispatch (`macos.rs`, `linux.rs`, `windows.rs`), each exposing `apply(QosClass)` acting on the *current* thread. macOS = `pthread_set_qos_class_self_np`; Linux = `setpriority` (+ optional E-core affinity); Windows = EcoQoS via `SetThreadInformation` + `SetThreadPriority`. A no-op fallback covers other platforms.
-  - `error` — `thiserror` `Error`.
-  - *(later phases)* `runtime` tokio wrapper, `thread` quiet-thread spawner, `topology` E/P-core detection, `telemetry` measurement.
-- **`bgrt-bench`** — binary: the time / core-placement / frequency / power comparison harness (Phase 5).
+  - `backend/` — per-OS dispatch (`macos.rs`, `linux.rs`, `windows.rs`), each exposing `apply(QosClass)` acting on the *current* thread. macOS = `pthread_set_qos_class_self_np`; Linux = `setpriority`; Windows = EcoQoS via `SetThreadInformation` + `SetThreadPriority`. A no-op fallback covers other platforms.
+  - `runtime` — `Builder` → `Runtime` wrapping a multi-thread tokio runtime; applies `QosClass` to every runtime thread (workers + blocking pool) via `on_thread_start`. `spawn` / `spawn_blocking` / `block_on` / `handle` / `qos`.
+  - `thread` — `spawn_thread` (infallible, like `std::thread::spawn`) and `ThreadBuilder` (`io::Result`, like `std::thread::Builder`); applies QoS at the top of the thread body.
+  - `topology` — E-core detection (Linux sysfs `cpu_capacity`) + `sched_setaffinity` pinning; no-op off Linux. `pin_efficiency_cores` is opt-in.
+  - `telemetry` *(feature `telemetry`, off by default)* — measurement primitives: `sample()` (cpu/core-type/freq), `energy_uj()`/`EnergyMeter`, `Aggregate`. Graceful `None`/`Unknown` where unavailable.
+  - `error` — `thiserror` `Error` (`Backend`, `Runtime`).
+  - `examples/` — `background_task`, `mixed_runtimes`, `quiet_threads`.
+- **`bgrt-bench`** — the comparison harness binary (enables `bgrt/telemetry`).
+  - `workload` — CPU-bound, self-sampling loop; returns work units (throughput).
+  - `runner` — `Executor` (Default/Utility/Background/BackgroundThreads) → `RunResult` (wall, work, aggregate, energy, powermetrics). On macOS the threads runner matches the waiter's QoS during `join` (avoids the kernel promoting background threads off E-cores).
+  - `report` — `Summary`, aligned table, JSON, `background_not_hotter` verdict.
+  - `power` — pure, cross-platform `PowerStats` parser for `powermetrics` output.
+  - `power_macos` *(macOS only)* — `Sampler` that runs `powermetrics` per executor run (needs sudo).
 
 ## QoS mapping
 
