@@ -8,6 +8,29 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Phase 5.1 — Throughput, powermetrics, macOS finding — 2026-06-13
+- **Throughput metric:** the workload now counts work units completed and reports
+  `work` + `work/s`. This makes the energy/perf tradeoff visible **unprivileged on
+  macOS** (where placement/freq need powermetrics): e.g. a Background runtime
+  measured ~2050 work/s vs ~5165 for Default — the E-core confinement, quantified.
+- **macOS `powermetrics` telemetry:** `--mac-power` now samples `powermetrics`
+  *per executor run* (cluster freq, E/P residency, CPU power) via a `power_macos`
+  `Sampler`; parsing is a pure, cross-platform, unit-tested `power::PowerStats`.
+  When present it fills the `%E` / frequency / energy columns (and a verdict)
+  that are otherwise `n/a` on macOS. Requires running under `sudo`.
+- **Finding (macOS QoS override):** a higher-QoS thread that synchronously
+  `join`s a background thread **promotes it off the efficiency cores**
+  (priority-inversion avoidance); tokio's `await` does not. The harness's
+  `background-threads` runner now matches the waiting thread's QoS to the workers
+  on macOS so the measurement reflects the executor, not the join — confirmed by
+  the throughput dropping from ~5175 to ~2180 work/s. Documented in the README as
+  a real macOS behavior users should know.
+- Removed the old one-shot `--mac-power` end-of-run reading (superseded by
+  per-run sampling).
+- **Verified:** macOS — `cargo test --workspace` (29 lib + 16 bench + doctest +
+  integration), harness shows the throughput gap; clippy `-Dwarnings` all three
+  targets.
+
 ### Phase 5 — Comparison harness — 2026-06-13
 - `bgrt-bench` now compares executors end to end:
   - `workload` — CPU-bound loop that self-samples telemetry (placement attributed

@@ -1,9 +1,11 @@
-//! `bgrt-bench` — compare execution time, core placement, CPU frequency, and
-//! energy across bgrt executors.
+//! `bgrt-bench` — compare execution time, throughput, core placement, CPU
+//! frequency, and energy across bgrt executors.
 //!
 //! Each selected executor runs the same CPU-bound workload for a fixed duration
-//! while self-sampling telemetry; results are printed as a table or JSON.
+//! while self-sampling telemetry (and, with `--mac-power`, sampling
+//! `powermetrics`); results are printed as a table or JSON.
 
+mod power;
 mod report;
 mod runner;
 mod workload;
@@ -56,13 +58,17 @@ struct Args {
     #[arg(long)]
     pin: bool,
 
-    /// Also read CPU power via `powermetrics` (macOS only; needs sudo).
+    /// Also sample CPU power/frequency via `powermetrics` (macOS only; needs sudo).
     #[arg(long)]
     mac_power: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    if args.mac_power && !cfg!(target_os = "macos") {
+        eprintln!("--mac-power is only supported on macOS; ignoring");
+    }
 
     let executors = if args.executors.is_empty() {
         vec![
@@ -84,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut summaries = Vec::with_capacity(executors.len());
     for executor in executors {
         eprintln!("running {} for {:.1}s ...", executor.label(), args.duration);
-        let result = runner::run(executor, cfg, args.pin)?;
+        let result = runner::run(executor, cfg, args.pin, args.mac_power)?;
         summaries.push(Summary::from_result(&result));
     }
 
@@ -104,24 +110,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    report_mac_power(args.mac_power);
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn report_mac_power(enabled: bool) {
-    if !enabled {
-        return;
-    }
-    match power_macos::cpu_power_mw() {
-        Some(mw) => eprintln!("CPU power (powermetrics): {mw} mW"),
-        None => eprintln!("CPU power: unavailable (run with sudo; needs powermetrics)"),
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn report_mac_power(enabled: bool) {
-    if enabled {
-        eprintln!("--mac-power is only supported on macOS; ignoring");
-    }
 }

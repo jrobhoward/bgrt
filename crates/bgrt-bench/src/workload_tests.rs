@@ -9,13 +9,14 @@ use parking_lot::Mutex;
 use super::{WorkloadConfig, run};
 
 #[test]
-fn run____short_duration____records_at_least_one_sample_and_returns() {
+fn run____short_duration____records_samples_and_returns_work() {
     let cfg = WorkloadConfig {
         duration: Duration::from_millis(40),
         sample_interval: Duration::from_millis(5),
         workers: 1,
     };
     let agg = Mutex::new(Aggregate::default());
-    run(cfg, &agg);
+    let units = run(cfg, &agg);
+    assert!(units >= 1, "expected at least one work unit");
     assert!(agg.lock().samples() >= 1);
 }

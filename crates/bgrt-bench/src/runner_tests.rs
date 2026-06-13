@@ -15,15 +15,16 @@ fn short_cfg() -> WorkloadConfig {
 }
 
 #[test]
-fn run____background_runtime____produces_result_with_samples() {
-    let r = run(Executor::Background, short_cfg(), false).unwrap();
+fn run____background_runtime____produces_result_with_work_and_samples() {
+    let r = run(Executor::Background, short_cfg(), false, false).unwrap();
+    assert!(r.work_units >= 1);
     assert!(r.aggregate.samples() >= 1);
     assert!(r.wall >= Duration::from_millis(60));
 }
 
 #[test]
-fn run____background_threads____produces_result_with_samples() {
-    let r = run(Executor::BackgroundThreads, short_cfg(), false).unwrap();
-    assert!(r.aggregate.samples() >= 1);
+fn run____background_threads____produces_result_with_work() {
+    let r = run(Executor::BackgroundThreads, short_cfg(), false, false).unwrap();
+    assert!(r.work_units >= 1);
     assert!(r.wall >= Duration::from_millis(60));
 }

@@ -7,6 +7,7 @@ use bgrt::QosClass;
 use bgrt::telemetry::{Aggregate, EnergyMeter};
 use parking_lot::Mutex;
 
+use crate::power::PowerStats;
 use crate::workload::{self, WorkloadConfig};
 
 /// The executors the harness can compare.
@@ -48,10 +49,14 @@ pub struct RunResult {
     pub executor: Executor,
     /// Total wall-clock time for the run.
     pub wall: Duration,
-    /// Folded self-samples (placement + frequency).
+    /// Total work units completed across all workers (throughput numerator).
+    pub work_units: u64,
+    /// Folded self-samples (placement + frequency), where available.
     pub aggregate: Aggregate,
-    /// Energy consumed during the run, if measurable.
+    /// Energy consumed during the run (Linux RAPL), if measurable.
     pub energy_uj: Option<u64>,
+    /// macOS `powermetrics` stats for the run, if `--mac-power` and root.
+    pub power: Option<PowerStats>,
 }
 
 /// Run the workload on `executor`, returning its measured result.
@@ -60,10 +65,15 @@ pub struct RunResult {
 ///
 /// Returns the [`bgrt::Error`] from building a runtime (for the runtime-backed
 /// executors).
-pub fn run(executor: Executor, cfg: WorkloadConfig, pin: bool) -> Result<RunResult, bgrt::Error> {
+pub fn run(
+    executor: Executor,
+    cfg: WorkloadConfig,
+    pin: bool,
+    mac_power: bool,
+) -> Result<RunResult, bgrt::Error> {
     match executor {
-        Executor::BackgroundThreads => Ok(run_on_threads(executor, cfg, pin)),
-        _ => run_on_runtime(executor, cfg, pin),
+        Executor::BackgroundThreads => Ok(run_on_threads(executor, cfg, pin, mac_power)),
+        _ => run_on_runtime(executor, cfg, pin, mac_power),
     }
 }
 
@@ -71,6 +81,7 @@ fn run_on_runtime(
     executor: Executor,
     cfg: WorkloadConfig,
     pin: bool,
+    mac_power: bool,
 ) -> Result<RunResult, bgrt::Error> {
     let rt = bgrt::Builder::new()
         .qos(executor.qos())
@@ -79,6 +90,7 @@ fn run_on_runtime(
         .build()?;
 
     let agg = Arc::new(Mutex::new(Aggregate::default()));
+    let sampler = power_start(cfg, mac_power);
     let meter = EnergyMeter::start();
     let start = Instant::now();
 
@@ -87,24 +99,37 @@ fn run_on_runtime(
         let agg = Arc::clone(&agg);
         handles.push(rt.spawn(async move { workload::run(cfg, &agg) }));
     }
-    rt.block_on(async move {
+    let work_units = rt.block_on(async move {
+        let mut total = 0u64;
         for h in handles {
-            let _ = h.await;
+            if let Ok(units) = h.await {
+                total = total.saturating_add(units);
+            }
         }
+        total
     });
 
     let wall = start.elapsed();
     let energy_uj = meter.stop_uj();
+    let power = power_finish(sampler);
     Ok(RunResult {
         executor,
         wall,
+        work_units,
         aggregate: take_aggregate(agg),
         energy_uj,
+        power,
     })
 }
 
-fn run_on_threads(executor: Executor, cfg: WorkloadConfig, pin: bool) -> RunResult {
+fn run_on_threads(
+    executor: Executor,
+    cfg: WorkloadConfig,
+    pin: bool,
+    mac_power: bool,
+) -> RunResult {
     let agg = Arc::new(Mutex::new(Aggregate::default()));
+    let sampler = power_start(cfg, mac_power);
     let meter = EnergyMeter::start();
     let start = Instant::now();
 
@@ -120,17 +145,34 @@ fn run_on_threads(executor: Executor, cfg: WorkloadConfig, pin: bool) -> RunResu
             Err(e) => eprintln!("warning: failed to spawn worker thread: {e}"),
         }
     }
+    // On macOS, a higher-QoS thread that synchronously `join`s a background
+    // thread promotes it off the efficiency cores (priority-inversion
+    // avoidance). Match the waiter's QoS to the workers so the measurement
+    // reflects the executor, not the join. (macOS lets us raise QoS back;
+    // Linux/Windows don't promote on join, so this is macOS-only.)
+    #[cfg(target_os = "macos")]
+    let _ = bgrt::apply(executor.qos());
+
+    let mut work_units = 0u64;
     for h in handles {
-        let _ = h.join();
+        if let Ok(units) = h.join() {
+            work_units = work_units.saturating_add(units);
+        }
     }
+
+    #[cfg(target_os = "macos")]
+    let _ = bgrt::apply(QosClass::Default);
 
     let wall = start.elapsed();
     let energy_uj = meter.stop_uj();
+    let power = power_finish(sampler);
     RunResult {
         executor,
         wall,
+        work_units,
         aggregate: take_aggregate(agg),
         energy_uj,
+        power,
     }
 }
 
@@ -139,6 +181,32 @@ fn take_aggregate(agg: Arc<Mutex<Aggregate>>) -> Aggregate {
     Arc::into_inner(agg)
         .map(Mutex::into_inner)
         .unwrap_or_default()
+}
+
+// --- powermetrics sampling (macOS only; no-op elsewhere) -------------------
+
+#[cfg(target_os = "macos")]
+fn power_start(cfg: WorkloadConfig, mac_power: bool) -> Option<crate::power_macos::Sampler> {
+    if mac_power {
+        crate::power_macos::Sampler::start(cfg.duration)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn power_finish(sampler: Option<crate::power_macos::Sampler>) -> Option<PowerStats> {
+    sampler.and_then(crate::power_macos::Sampler::finish)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn power_start(_cfg: WorkloadConfig, _mac_power: bool) -> Option<()> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn power_finish(_sampler: Option<()>) -> Option<PowerStats> {
+    None
 }
 
 #[cfg(test)]

@@ -57,17 +57,28 @@ Run some work normally and other work quietly by keeping a normal tokio runtime
 execution time, core placement, frequency, and energy:
 
 ```bash
-cargo run -p bgrt-bench -- --duration 5 --workers 1
-# executor              wall_ms  cpus     %E  mean_mhz  max_mhz  energy_j  samples
-# default                  5001     1    0.0      3100     3200     12.4      250
-# background               5003     4  100.0      1010     1080      3.1      249
-# ...
-# verdict: background peak frequency ≤ (stayed cool) default
+cargo run --release -p bgrt-bench -- --duration 5 --workers 1
+# executor              wall_ms       work      work/s     %E  mean_mhz  max_mhz  energy_j
+# default                  5000      25800        5160    n/a       n/a      n/a       n/a
+# background               5000      10300        2060    n/a       n/a      n/a       n/a
+# background-threads       5000      10800        2160    n/a       n/a      n/a       n/a
 ```
 
+The headline signal is **`work/s` (throughput)**: the runs are duration-bounded,
+so a quieter executor completes *less* work in the same wall time. The example
+above (macOS, no sudo) shows Background doing ~40% of Default's work — the
+efficiency-core confinement, measured without any privileged telemetry.
+
 Flags: `--executors default,utility,background,background-threads` (subset/order),
-`--format json`, `--interval <ms>` (sampling), `--pin` (Linux E-core affinity),
-`--mac-power` (macOS power via `powermetrics`).
+`--workers <n>`, `--format json`, `--interval <ms>` (sampling), `--pin` (Linux
+E-core affinity), `--mac-power` (macOS `%E`/frequency/power via `powermetrics`).
+
+> **macOS note (QoS promotion):** synchronously waiting on a background thread
+> from a higher-QoS thread promotes it *off* the efficiency cores
+> (priority-inversion avoidance), whereas an async `await` on a background
+> runtime does not. The harness accounts for this in its `background-threads`
+> runner. The practical takeaway: fire-and-forget background threads stay quiet,
+> but if a foreground thread blocks waiting on one, macOS may speed it up.
 
 **What's measurable per platform** (anything unavailable shows `n/a` / `null`,
 never an error):
