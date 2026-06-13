@@ -21,8 +21,10 @@ cargo build --workspace --release
 
 # Test (telemetry tests run when the feature is on, e.g. via the bench)
 cargo test --workspace
-cargo test -p bgrt                                  # single crate
+cargo test -p bgrt                                  # single crate (default features: tokio on)
 cargo test -p bgrt --features telemetry             # incl. telemetry module
+cargo test -p bgrt --features rayon                 # incl. rayon_pool module
+cargo test -p bgrt --no-default-features            # lean build: no tokio, no rayon
 cargo test -p bgrt -- some____test____name          # single test
 
 # Lint (must be clean before any phase is considered done)
@@ -50,12 +52,13 @@ Cargo workspace, edition 2024, `rust-version = 1.85.0`.
 - **`bgrt`** — the library.
   - `qos` — `QosClass { Background, Utility, Default }`, the energy class applied per thread.
   - `backend/` — per-OS dispatch (`macos.rs`, `linux.rs`, `windows.rs`), each exposing `apply(QosClass)` acting on the *current* thread. macOS = `pthread_set_qos_class_self_np`; Linux = `setpriority`; Windows = EcoQoS via `SetThreadInformation` + `SetThreadPriority`. A no-op fallback covers other platforms.
-  - `runtime` — `RuntimeBuilder` → `Runtime` wrapping a multi-thread tokio runtime; applies `QosClass` to every runtime thread (workers + blocking pool) via `on_thread_start`. `spawn` / `spawn_blocking` / `block_on` / `handle` / `qos`.
-  - `thread` — `spawn_thread` (infallible, like `std::thread::spawn`) and `ThreadBuilder` (`io::Result`, like `std::thread::Builder`); applies QoS at the top of the thread body.
+  - `runtime` *(feature `tokio`, on by default)* — `RuntimeBuilder` → `Runtime` wrapping a multi-thread tokio runtime; applies `QosClass` to every runtime thread (workers + blocking pool) via `on_thread_start`. `spawn` / `spawn_blocking` / `block_on` / `handle` / `qos`.
+  - `rayon_pool` *(feature `rayon`, off by default)* — `RayonBuilder` → `RayonPool` wrapping `rayon::ThreadPool`; applies `QosClass` in `start_handler`. `RayonPool` derefs to `rayon::ThreadPool`; use `pool.install(|| …)` to run `par_iter`/`join`/`scope` work on the quiet threads.
+  - `thread` — `spawn_thread` (infallible, like `std::thread::spawn`) and `ThreadBuilder` (`io::Result`, like `std::thread::Builder`); applies QoS at the top of the thread body. Available with no feature flags.
   - `topology` — E-core detection (Linux sysfs `cpu_capacity`) + `sched_setaffinity` pinning; no-op off Linux. `pin_efficiency_cores` is opt-in.
   - `telemetry` *(feature `telemetry`, off by default)* — measurement primitives: `sample()` (cpu/core-type/freq), `energy_uj()`/`EnergyMeter`, `Aggregate`. Graceful `None`/`Unknown` where unavailable.
-  - `error` — `thiserror` `Error` (`Backend`, `Runtime`).
-  - `examples/` — `background_task`, `mixed_runtimes`, `quiet_threads`.
+  - `error` — `thiserror` `Error` (`Backend`; `Runtime` gated on `tokio`; `ThreadPool` gated on `rayon`).
+  - `examples/` — `background_task`, `mixed_runtimes` (require feature `tokio`), `quiet_threads`.
 - **`bgrt-bench`** — the comparison harness binary (enables `bgrt/telemetry`).
   - `workload` — CPU-bound, self-sampling loop; returns work units (throughput).
   - `runner` — `Executor` (Default/Utility/Background/BackgroundThreads) → `RunResult` (wall, work, aggregate, energy, powermetrics). On macOS the threads runner matches the waiter's QoS during `join` (avoids the kernel promoting background threads off E-cores).

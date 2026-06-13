@@ -25,6 +25,9 @@ bgrt = { path = "crates/bgrt", version = "0.1.0" }
 # Async runtime we wrap (Phase 2+)
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time"] }
 
+# Parallel iterator library (optional bgrt feature)
+rayon = "1"
+
 # Error handling / concurrency / logging
 thiserror = "2"
 parking_lot = "0.12"

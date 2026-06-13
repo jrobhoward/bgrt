@@ -15,6 +15,16 @@ categories.workspace = true
 workspace = true
 
 [features]
+# tokio is on by default: `RuntimeBuilder`/`Runtime` require it.
+# Disable with `default-features = false` to get a lean dep tree when you
+# only need `spawn_thread`/`ThreadBuilder`/`apply`.
+default = ["tokio"]
+tokio = ["dep:tokio"]
+
+# rayon integration: `RayonBuilder`/`RayonPool` for quiet parallel iterators.
+# Off by default; opt in with `features = ["rayon"]`.
+rayon = ["dep:rayon"]
+
 # Measurement primitives for the comparison harness (core placement, frequency,
 # energy). Off by default so the default build stays lean; pulls in no extra
 # dependencies (uses the platform `libc`/`windows-sys` already present).
@@ -23,7 +33,8 @@ telemetry = []
 [dependencies]
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -33,3 +44,11 @@ windows-sys = { workspace = true }
 
 [dev-dependencies]
 rstest = { workspace = true }
+
+[[example]]
+name = "background_task"
+required-features = ["tokio"]
+
+[[example]]
+name = "mixed_runtimes"
+required-features = ["tokio"]

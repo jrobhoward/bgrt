@@ -11,8 +11,14 @@ pub enum Error {
     Backend(String),
 
     /// The underlying Tokio runtime could not be built.
+    #[cfg(feature = "tokio")]
     #[error("failed to build runtime: {0}")]
     Runtime(String),
+
+    /// A rayon thread pool could not be built.
+    #[cfg(feature = "rayon")]
+    #[error("failed to build thread pool: {0}")]
+    ThreadPool(String),
 }
 
 #[cfg(test)]

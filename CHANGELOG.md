@@ -8,6 +8,37 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Optional features, rayon integration, Linux run — 2026-06-13
+- **Optional `tokio` feature (default on):** `RuntimeBuilder`/`Runtime` now live
+  behind `features = ["tokio"]` (enabled by default). Users who only need
+  `spawn_thread`/`ThreadBuilder`/`apply` can opt out with `default-features = false`
+  for a lean dep tree with no tokio. `bgrt-bench` now declares
+  `features = ["telemetry", "tokio"]` explicitly.
+- **New `rayon` feature (opt-in, default off):** `RayonBuilder`/`RayonPool` wrap
+  a `rayon::ThreadPool` with the configured `QosClass` applied to every thread at
+  start, mirroring the `RuntimeBuilder`/`Runtime` pattern. `pool.install(|| …)`
+  routes rayon `par_iter`/`join`/`scope` work through the quiet threads. `RayonPool`
+  derefs to `rayon::ThreadPool` for full API access; `pool.qos()` returns the
+  configured class.
+- **Error variants gated by feature:** `Error::Runtime` behind
+  `#[cfg(feature = "tokio")]`; new `Error::ThreadPool` behind
+  `#[cfg(feature = "rayon")]`.
+- **Clippy fix (`power.rs`):** `PowerStats::parse` and its private helpers
+  (`Cluster`, `Acc`, `freq_acc`, `cluster_kind`, `metric_after`, `leading_number`)
+  gated `#[cfg(any(target_os = "macos", test))]` — they are only called by the
+  macOS-only `power_macos` sampler, but the unit tests still exercise them on all
+  platforms. Fixes `cargo clippy --all-targets -- -Dwarnings` on Linux.
+- **Linux run-verified on AMD Threadripper (16-core, homogeneous, no E-cores):**
+  all tests pass; benchmark shows flat throughput and frequency across executors —
+  expected, since `nice(19)` only deprioritizes under CPU contention and there are
+  no E-cores for affinity pinning. RAPL energy is available under `sudo` but
+  variance (<3%) is measurement noise across whole-package readings on an otherwise-
+  idle 16-core machine, not a per-thread signal. Meaningful Linux results require
+  either a heterogeneous (P+E) CPU or a CPU-loaded machine.
+- **Verified:** `cargo test --workspace`, `cargo test -p bgrt --no-default-features`,
+  `cargo test -p bgrt --features rayon`, and `cargo clippy --workspace --all-targets
+  -- -Dwarnings` all clean on Linux (Threadripper).
+
 ### Review pass — refactor, tests, docs — 2026-06-13
 - **Renamed** `bgrt::Builder` → `bgrt::RuntimeBuilder` (symmetry with
   `ThreadBuilder`; clearer at the crate root). Updated lib, tests, bench,

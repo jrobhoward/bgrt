@@ -10,31 +10,39 @@ it onto a quiet executor.
   `Default`, mapped to each OS's native facility: macOS QoS classes, Windows
   EcoQoS, Linux `nice` + efficiency-core affinity.
 - **No admin required** — the library only ever *lowers* its own threads' demands.
-- **Wraps tokio** (no fork) — an energy-classified runtime, plus a quiet
-  OS-thread spawner for non-async work.
+- **Wraps tokio, integrates with rayon** — an energy-classified async runtime,
+  a quiet rayon thread pool for parallel iterators, and a quiet OS-thread spawner
+  for the non-async path.
 - **Never starves** — quiet work uses weighted-fair low priority, so it always
   crawls forward under load (not run-only-when-idle).
 - **Cross-platform** — macOS, Windows, Linux, including big.LITTLE / P+E CPUs.
 
-> **Status:** the library (QoS backends, runtime wrapper, quiet-thread spawner)
-> and the measurement harness are implemented and tested; macOS is run-verified
-> (see the M1 numbers below), Linux/Windows are cross-compiled and lint-clean
-> pending CI on real hardware. Design: [`docs/DESIGN.md`](docs/DESIGN.md); plan:
-> [`docs/ROADMAP.md`](docs/ROADMAP.md); state: [`CHANGELOG.md`](CHANGELOG.md).
+> **Status:** the library (QoS backends, runtime wrapper, quiet-thread spawner,
+> rayon pool) and the measurement harness are implemented and tested. macOS (M1)
+> and Linux (Threadripper, AMD x86) are run-verified; Windows is cross-compiled
+> and lint-clean pending a run on real hardware. Design:
+> [`docs/DESIGN.md`](docs/DESIGN.md); plan: [`docs/ROADMAP.md`](docs/ROADMAP.md);
+> state: [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Usage
 
 ```rust
 use bgrt::QosClass;
 
-// A quiet async executor (wraps a tokio runtime).
+// A quiet async executor (wraps a tokio runtime; feature "tokio", on by default).
 let rt = bgrt::RuntimeBuilder::new()
     .qos(QosClass::Background)
     .worker_threads(1)
     .build()?;
 rt.spawn(async { /* quiet async work */ });
 
-// A quiet OS thread (non-async path).
+// A quiet rayon thread pool (feature "rayon", opt-in).
+let pool = bgrt::RayonBuilder::new()
+    .qos(QosClass::Background)
+    .build()?;
+pool.install(|| data.par_iter().for_each(|x| process(x)));
+
+// A quiet OS thread (no features needed).
 let jh = bgrt::spawn_thread(QosClass::Background, || { /* CPU-bound loop */ });
 
 // Or classify the current thread directly.
@@ -50,6 +58,17 @@ Runnable examples (`cargo run --example <name> -p bgrt`):
 - [`background_task`](crates/bgrt/examples/background_task.rs) — a quiet async task.
 - [`mixed_runtimes`](crates/bgrt/examples/mixed_runtimes.rs) — foreground + background runtimes together.
 - [`quiet_threads`](crates/bgrt/examples/quiet_threads.rs) — `spawn_thread` and `ThreadBuilder`.
+
+## Feature flags
+
+| Feature | Default | Adds |
+|---------|---------|------|
+| `tokio` | ✅ on | `RuntimeBuilder`, `Runtime` (async executor) |
+| `rayon` | ❌ off | `RayonBuilder`, `RayonPool` (parallel iterators) |
+| `telemetry` | ❌ off | measurement primitives used by `bgrt-bench` |
+
+`default-features = false` gives a minimal dep tree: just `QosClass`, `apply`,
+`spawn_thread`, and `ThreadBuilder` — no tokio, no rayon.
 
 ## QoS classes
 
@@ -111,6 +130,30 @@ and fans down" goal, measured.
 > runtime does not. The harness accounts for this in its `background-threads`
 > runner. The practical takeaway: fire-and-forget background threads stay quiet,
 > but if a foreground thread blocks waiting on one, macOS may speed it up.
+
+### Measured on Linux / AMD Threadripper (homogeneous, 16-core, with `sudo`)
+
+```text
+executor              wall_ms       work      work/s     %E  mean_mhz  max_mhz  energy_j
+default                 15000    4350512      290033    n/a      3687     3692   960.534
+utility                 15000    4350058      290003    n/a      3687     3692   982.798
+background              15000    4348280      289885    n/a      3687     3692   969.635
+background-threads      15000    4349948      289993    n/a      3687     3692   974.817
+verdict: background peak frequency ≤ (stayed cool) default
+```
+
+All executors are identical — the expected null result on a homogeneous CPU. Two
+reasons `nice(19)` shows nothing here:
+
+1. **No contention:** one active thread, no competing load. `nice` only
+   deprioritizes when other threads are competing for the same core.
+2. **No E-cores:** Threadripper has no `cpu_capacity` sysfs entries, so
+   efficiency-core affinity is a no-op and there's no DVFS difference from nice alone.
+
+The `energy_j` variance (<3%) is measurement noise from RAPL reading the entire
+16-core package, not per-thread power. Meaningful Linux results need a
+heterogeneous (P+E) CPU (Alder Lake, Raptor Lake, Meteor Lake) or a CPU-loaded
+machine where scheduling priority actually changes which threads run.
 
 **What's measurable per platform** (anything unavailable shows `n/a` / `null`,
 never an error):

@@ -8,29 +8,67 @@
 //! classes, Windows EcoQoS, Linux `nice` — and runs as a regular (non-admin)
 //! user.
 //!
-//! `bgrt` provides an energy-classified async runtime — build one with
-//! [`RuntimeBuilder`] and schedule futures onto it with [`Runtime::spawn`] — a
-//! quiet-thread spawner for the non-async path ([`spawn_thread`] /
-//! [`ThreadBuilder`]), and [`apply`], which classifies the **current** thread
-//! directly.
+//! # What's available
 //!
-//! # Example
+//! | API | Requires |
+//! |-----|----------|
+//! | [`apply`], [`spawn_thread`], [`ThreadBuilder`] | always (no features needed) |
+//! | [`RuntimeBuilder`], [`Runtime`] | feature `tokio` (default) |
+//! | [`RayonBuilder`], [`RayonPool`] | feature `rayon` |
+//!
+//! # Examples
+//!
+//! Classify the current thread directly — no feature flags needed:
 //!
 //! ```
+//! use bgrt::QosClass;
+//!
+//! bgrt::apply(QosClass::Background)?;
+//! # Ok::<(), bgrt::Error>(())
+//! ```
+//!
+//! Spawn a quiet OS thread:
+//!
+//! ```
+//! use bgrt::QosClass;
+//!
+//! let handle = bgrt::spawn_thread(QosClass::Background, || (0..100u64).sum::<u64>());
+//! assert_eq!(handle.join().unwrap(), 4950);
+//! ```
+//!
+//! Build a quiet async runtime (feature `tokio`, on by default):
+//!
+//! ```
+//! # #[cfg(feature = "tokio")] fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use bgrt::{QosClass, RuntimeBuilder};
 //!
-//! // A quiet, single-worker runtime; its thread runs on efficiency cores at a
-//! // low clock where the OS supports it.
 //! let rt = RuntimeBuilder::new().qos(QosClass::Background).build()?;
 //! let sum = rt.block_on(rt.spawn(async { (0..100u64).sum::<u64>() }))?;
 //! assert_eq!(sum, 4950);
-//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! # Ok(()) }
+//! # #[cfg(not(feature = "tokio"))] fn main() {}
+//! ```
+//!
+//! Build a quiet rayon pool (feature `rayon`):
+//!
+//! ```
+//! # #[cfg(feature = "rayon")] fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use bgrt::{QosClass, RayonBuilder};
+//!
+//! let pool = RayonBuilder::new().qos(QosClass::Background).build()?;
+//! let sum: u64 = pool.install(|| (0..100u64).sum());
+//! assert_eq!(sum, 4950);
+//! # Ok(()) }
+//! # #[cfg(not(feature = "rayon"))] fn main() {}
 //! ```
 #![warn(missing_docs)]
 
 mod backend;
 pub mod error;
 mod qos;
+#[cfg(feature = "rayon")]
+mod rayon_pool;
+#[cfg(feature = "tokio")]
 mod runtime;
 mod thread;
 mod topology;
@@ -43,6 +81,9 @@ mod test_support;
 
 pub use error::Error;
 pub use qos::QosClass;
+#[cfg(feature = "rayon")]
+pub use rayon_pool::{RayonBuilder, RayonPool};
+#[cfg(feature = "tokio")]
 pub use runtime::{Runtime, RuntimeBuilder};
 pub use thread::{ThreadBuilder, spawn_thread};
 
