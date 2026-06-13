@@ -2,18 +2,26 @@
 //!
 //! Measures task execution time, core placement, CPU frequency, and power across
 //! bgrt executors (Default / Utility / Background runtimes and quiet threads).
-//! Phase 5 implements the full harness; this is the Phase 0 stub.
+//! The full comparison lands in Phase 5; today this is a telemetry smoke probe.
 
 use bgrt::QosClass;
+use bgrt::telemetry::{self, EnergyMeter};
 
 fn main() {
-    println!(
-        "bgrt-bench: comparison harness — not yet implemented (see docs/ROADMAP.md, Phase 5)."
-    );
+    println!("bgrt-bench: comparison harness — full version in Phase 5 (see docs/ROADMAP.md).");
 
-    // Exercise the library so the dependency wiring is real from Phase 0.
-    match bgrt::apply(QosClass::Default) {
-        Ok(()) => println!("applied QosClass::Default to the current thread (no-op in Phase 0)."),
-        Err(e) => eprintln!("error: {e}"),
+    if let Err(e) = bgrt::apply(QosClass::Background) {
+        eprintln!("warning: could not apply qos: {e}");
+    }
+
+    let meter = EnergyMeter::start();
+    let s = telemetry::sample();
+    println!(
+        "current sample: cpu={:?}, core_type={:?}, freq_mhz={:?}",
+        s.cpu, s.core_type, s.freq_mhz
+    );
+    match meter.stop_uj() {
+        Some(uj) => println!("energy since start: {uj} µJ"),
+        None => println!("energy: unavailable (needs RAPL access / supported platform)"),
     }
 }

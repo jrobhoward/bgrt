@@ -22,6 +22,9 @@ mod runtime;
 mod thread;
 mod topology;
 
+#[cfg(feature = "telemetry")]
+pub mod telemetry;
+
 pub use error::Error;
 pub use qos::QosClass;
 pub use runtime::{Builder, Runtime};

@@ -8,6 +8,27 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Phase 4 — Telemetry primitives — 2026-06-13
+- New `telemetry` module behind an off-by-default `telemetry` feature (no extra
+  deps; uses the platform `libc`/`windows-sys` already present). Every signal
+  degrades gracefully to `None`/`Unknown` — never errors or panics.
+  - `sample()` → `Sample { cpu, core_type, freq_mhz }`: current CPU
+    (Linux `sched_getcpu` / Windows `GetCurrentProcessorNumber` / macOS none),
+    E/P classification (Linux via `topology`), frequency (Linux sysfs `cpufreq`
+    / Windows `CallNtPowerInformation`).
+  - `energy_uj()` + `EnergyMeter` — Linux RAPL package energy (when readable),
+    else `None`.
+  - `Aggregate` — folds samples into residency (% E vs P), distinct CPUs, and
+    mean/max frequency.
+- `bgrt-bench` enables the feature and prints a telemetry smoke probe.
+- **Scope (vs. plan):** threaded Sampler orchestration, Windows E/P
+  classification, and the macOS `powermetrics` (root) path all move to Phase 5.
+- **Verified:** macOS — `cargo test --workspace` (29 tests incl. 10 telemetry;
+  pure aggregation/classification/energy-delta logic fully covered), clippy
+  `-Dwarnings` (default *and* `--features telemetry`), `cargo doc`, bench runs
+  (shows honest macOS degradation). Linux & Windows — clippy `-Dwarnings` clean
+  cross-target with `--features telemetry`.
+
 ### Phase 3 — Quiet thread spawn API — 2026-06-13
 - `spawn_thread(class, f)` — classified OS thread, infallible like
   `std::thread::spawn` (no pinning; panics on OS failure, as std does).

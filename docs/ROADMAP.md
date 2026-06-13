@@ -154,7 +154,7 @@ Dev: `rstest`, `tempfile`. Release profile: `strip`, `lto`, `codegen-units = 1`.
 | 1 | QoS backends (macOS / Windows / Linux)      | ✅ Done (macOS run-verified; Linux/Windows cross-check + clippy clean). Affinity deferred to Phase 2. |
 | 2 | `Runtime` — tokio wrapper                    | ✅ Done (macOS run-verified incl. blocking pool; Linux/Windows cross-check clean) |
 | 3 | Quiet thread + blocking spawn API           | ✅ Done (macOS run-verified; Linux/Windows cross-check clean) |
-| 4 | Telemetry (core / frequency / power)        | ⬜ Not started |
+| 4 | Telemetry (core / frequency / power)        | ✅ Done (primitives; Sampler orchestration + macOS powermetrics → Phase 5) |
 | 5 | Comparison harness (`bgrt-bench`)           | ⬜ Not started |
 | 6 | Docs, examples, polish                      | ⬜ Not started |
 
@@ -209,7 +209,17 @@ Legend: ⬜ not started · 🔶 in progress · ✅ done. Update this table **and
 - **DoD:** a spawned quiet thread reports the expected nice/QoS from within;
   blocking tasks confirmed classified.
 
-### Phase 4 — Telemetry (measurement primitives)
+### Phase 4 — Telemetry (measurement primitives) — ✅ Done
+*Shipped as a `telemetry` feature-gated module in `bgrt` (off by default; no extra
+deps). Point queries + pure aggregation; graceful `None`/`Unknown` everywhere.
+`sample()` (cpu + core type + freq), `energy_uj()`/`EnergyMeter`, `Aggregate`.
+Deviations from the original outline below: the threaded **Sampler** orchestration
+moved to Phase 5 (it's tied to how workloads run); **Windows E/P** classification
+and the **macOS `powermetrics`** privileged path are deferred to Phase 5. macOS
+unprivileged returns `None`/`Unknown` (verified via the bench smoke probe); Linux
+gives cpu+type+freq (and energy where RAPL is readable); Windows gives cpu+freq.*
+
+#### Original outline
 - `Telemetry` trait + per-OS impls, each signal optional & gracefully degrading:
   - **Core placement / type:** Linux `sched_getcpu` + `topology`; Windows
     `GetCurrentProcessorNumber` + cpu-set efficiency class; macOS — no per-thread

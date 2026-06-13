@@ -14,6 +14,12 @@ categories.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Measurement primitives for the comparison harness (core placement, frequency,
+# energy). Off by default so the default build stays lean; pulls in no extra
+# dependencies (uses the platform `libc`/`windows-sys` already present).
+telemetry = []
+
 [dependencies]
 thiserror = { workspace = true }
 tracing = { workspace = true }
