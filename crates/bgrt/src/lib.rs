@@ -9,20 +9,23 @@
 //! user.
 //!
 //! `bgrt` provides an energy-classified async runtime — build one with
-//! [`Builder`] and schedule futures onto it with [`Runtime::spawn`] — plus
-//! [`apply`], which classifies the **current** thread directly. A quiet-thread
-//! spawner and a measurement harness land in later phases (see `docs/ROADMAP.md`).
+//! [`Builder`] and schedule futures onto it with [`Runtime::spawn`] — a
+//! quiet-thread spawner for the non-async path ([`spawn_thread`] /
+//! [`ThreadBuilder`]), and [`apply`], which classifies the **current** thread
+//! directly. A measurement harness lands in a later phase (see `docs/ROADMAP.md`).
 #![warn(missing_docs)]
 
 mod backend;
 pub mod error;
 mod qos;
 mod runtime;
+mod thread;
 mod topology;
 
 pub use error::Error;
 pub use qos::QosClass;
 pub use runtime::{Builder, Runtime};
+pub use thread::{ThreadBuilder, spawn_thread};
 
 /// Apply an energy [`QosClass`] to the **current** thread.
 ///

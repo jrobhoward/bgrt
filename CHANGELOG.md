@@ -8,6 +8,20 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Phase 3 — Quiet thread spawn API — 2026-06-13
+- `spawn_thread(class, f)` — classified OS thread, infallible like
+  `std::thread::spawn` (no pinning; panics on OS failure, as std does).
+- `ThreadBuilder` (qos / name / stack_size / pin_efficiency_cores) with
+  `spawn(f) -> io::Result<JoinHandle<T>>`, mirroring `std::thread::Builder` — the
+  non-panicking path; supports opt-in Linux E-core pinning. Both apply QoS at the
+  top of the thread body via a shared best-effort `classify` helper.
+- `spawn_blocking` classification was already covered by Phase 2's runtime hook;
+  this phase adds the standalone `std::thread` path.
+- **Verified:** macOS — `cargo test -p bgrt` (19 unit + 1 doctest), incl. QoS
+  read-back on `spawn_thread` and `ThreadBuilder` threads; clippy `-Dwarnings`;
+  `cargo doc`. Linux & Windows — clippy `-Dwarnings` clean cross-target;
+  nice-19 thread test runs on CI / Linux hardware.
+
 ### Phase 2 — Runtime (tokio wrapper) — 2026-06-13
 - `Builder` → `Runtime`: wraps a multi-thread tokio runtime, applying the chosen
   `QosClass` to every runtime thread via `on_thread_start` (best-effort: warns on
