@@ -155,7 +155,7 @@ Dev: `rstest`, `tempfile`. Release profile: `strip`, `lto`, `codegen-units = 1`.
 | 2 | `Runtime` — tokio wrapper                    | ✅ Done (macOS run-verified incl. blocking pool; Linux/Windows cross-check clean) |
 | 3 | Quiet thread + blocking spawn API           | ✅ Done (macOS run-verified; Linux/Windows cross-check clean) |
 | 4 | Telemetry (core / frequency / power)        | ✅ Done (primitives; Sampler orchestration + macOS powermetrics → Phase 5) |
-| 5 | Comparison harness (`bgrt-bench`)           | ⬜ Not started |
+| 5 | Comparison harness (`bgrt-bench`)           | ✅ Done (table/JSON + verdict + integration test; macOS run, Linux/Windows cross-check) |
 | 6 | Docs, examples, polish                      | ⬜ Not started |
 
 Legend: ⬜ not started · 🔶 in progress · ✅ done. Update this table **and**
@@ -236,7 +236,19 @@ gives cpu+type+freq (and energy where RAPL is readable); Windows gives cpu+freq.
   power where the platform/privilege allows; missing signals reported cleanly.
   Privilege requirements documented in README.
 
-### Phase 5 — Comparison harness (`bgrt-bench`) — *the measurement test suite*
+### Phase 5 — Comparison harness (`bgrt-bench`) — ✅ Done
+*Shipped: `workload` (CPU-bound, self-sampling), `runner` (Default/Utility/
+Background runtimes + Background threads → `RunResult`), `report` (aligned table,
+pretty JSON, and the `background_not_hotter` verdict). CLI: `--duration`,
+`--workers`, `--interval`, `--executors`, `--format`, `--pin`, `--mac-power`.
+Integration test (`tests/comparison.rs`) runs the built binary and asserts
+background peak freq ≤ default, skipping where frequency telemetry is absent.
+The macOS `powermetrics` reader is a tested, defensive `--mac-power` opt-in
+(graceful no-sudo degradation verified); Windows E/P classification still
+deferred. Verified: macOS run (table/JSON/verdict, honest n/a; 12 bench tests +
+integration test), Linux/Windows clippy clean cross-target.*
+
+#### Original outline
 - Defined CPU-bound workload(s) (e.g. sustained hashing / integer crunch) run for
   a fixed wall-clock budget or iteration count.
 - Runners: `Default` tokio runtime · `Utility` runtime · `Background` runtime ·

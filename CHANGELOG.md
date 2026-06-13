@@ -8,6 +8,29 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Phase 5 — Comparison harness — 2026-06-13
+- `bgrt-bench` now compares executors end to end:
+  - `workload` — CPU-bound loop that self-samples telemetry (placement attributed
+    to the worker actually running it).
+  - `runner` — runs the workload on Default / Utility / Background runtimes and on
+    Background OS threads → `RunResult` (wall-clock, `Aggregate`, energy).
+  - `report` — aligned text table, pretty JSON (`serde`), and the
+    `background_not_hotter` verdict (background peak freq ≤ default).
+  - CLI (`clap`): `--duration`, `--workers`, `--interval`, `--executors`,
+    `--format table|json`, `--pin` (Linux E-core affinity), `--mac-power`.
+- macOS `powermetrics` reader as a defensive `--mac-power` opt-in (parser unit-
+  tested; graceful no-sudo → "unavailable" verified). Windows E/P classification
+  still deferred.
+- `tests/comparison.rs` integration test runs the built binary, parses its JSON,
+  and asserts background ≤ default peak frequency — tolerant (skips where
+  frequency telemetry is unavailable, e.g. macOS).
+- `clippy.toml`: added `allow-expect-in-tests = true` (the integration test uses
+  `expect`; `expect_used` needs its own opt-out alongside `allow-unwrap-in-tests`).
+- **Verified:** macOS — `cargo test --workspace` (29 lib + 12 bench + 1 doctest +
+  1 integration), harness runs (table/JSON/verdict; honest macOS `n/a`); clippy
+  `-Dwarnings` + `cargo doc` clean. Linux & Windows — clippy `-Dwarnings` clean
+  cross-target.
+
 ### Phase 4 — Telemetry primitives — 2026-06-13
 - New `telemetry` module behind an off-by-default `telemetry` feature (no extra
   deps; uses the platform `libc`/`windows-sys` already present). Every signal

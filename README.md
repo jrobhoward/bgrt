@@ -51,6 +51,39 @@ Run some work normally and other work quietly by keeping a normal tokio runtime
 | `Utility` | `QOS_CLASS_UTILITY` | EcoQoS + normal | `nice(10)` |
 | `Default` | none | none | `nice(0)` |
 
+## Benchmarking (`bgrt-bench`)
+
+`bgrt-bench` runs the same CPU-bound workload on each executor and compares
+execution time, core placement, frequency, and energy:
+
+```bash
+cargo run -p bgrt-bench -- --duration 5 --workers 1
+# executor              wall_ms  cpus     %E  mean_mhz  max_mhz  energy_j  samples
+# default                  5001     1    0.0      3100     3200     12.4      250
+# background               5003     4  100.0      1010     1080      3.1      249
+# ...
+# verdict: background peak frequency ≤ (stayed cool) default
+```
+
+Flags: `--executors default,utility,background,background-threads` (subset/order),
+`--format json`, `--interval <ms>` (sampling), `--pin` (Linux E-core affinity),
+`--mac-power` (macOS power via `powermetrics`).
+
+**What's measurable per platform** (anything unavailable shows `n/a` / `null`,
+never an error):
+
+| Signal | Linux | Windows | macOS |
+|---|---|---|---|
+| wall-clock, samples | ✅ | ✅ | ✅ |
+| core placement / %E | ✅ sysfs | cpu only (E/P deferred) | needs `powermetrics` |
+| frequency | ✅ sysfs | ✅ `CallNtPowerInformation` | needs `powermetrics` |
+| energy | ✅ RAPL (often root) | — | `--mac-power` (needs `sudo`) |
+
+So on **Linux** you get the full picture unprivileged (energy may need root for
+RAPL); on **macOS** core/frequency/power need `sudo powermetrics` (use
+`--mac-power`); on **Windows** you get frequency + placement (E/P labelling is a
+TODO). The library itself never needs privileges — only this measurement tool does.
+
 ## Development
 
 ```bash

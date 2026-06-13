@@ -1,27 +1,127 @@
-//! `bgrt-bench` — comparison harness.
+//! `bgrt-bench` — compare execution time, core placement, CPU frequency, and
+//! energy across bgrt executors.
 //!
-//! Measures task execution time, core placement, CPU frequency, and power across
-//! bgrt executors (Default / Utility / Background runtimes and quiet threads).
-//! The full comparison lands in Phase 5; today this is a telemetry smoke probe.
+//! Each selected executor runs the same CPU-bound workload for a fixed duration
+//! while self-sampling telemetry; results are printed as a table or JSON.
 
-use bgrt::QosClass;
-use bgrt::telemetry::{self, EnergyMeter};
+mod report;
+mod runner;
+mod workload;
 
-fn main() {
-    println!("bgrt-bench: comparison harness — full version in Phase 5 (see docs/ROADMAP.md).");
+#[cfg(target_os = "macos")]
+mod power_macos;
 
-    if let Err(e) = bgrt::apply(QosClass::Background) {
-        eprintln!("warning: could not apply qos: {e}");
+use std::time::Duration;
+
+use clap::{Parser, ValueEnum};
+
+use crate::report::Summary;
+use crate::runner::Executor;
+use crate::workload::WorkloadConfig;
+
+/// Output format.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Format {
+    /// Aligned text table.
+    Table,
+    /// Pretty JSON.
+    Json,
+}
+
+/// Compare execution characteristics across bgrt executors.
+#[derive(Debug, Parser)]
+#[command(about, long_about = None)]
+struct Args {
+    /// Run duration per executor, in seconds.
+    #[arg(long, default_value_t = 3.0)]
+    duration: f64,
+
+    /// Concurrent workers (tasks/threads) per executor.
+    #[arg(long, default_value_t = 1)]
+    workers: usize,
+
+    /// Telemetry self-sample interval, in milliseconds.
+    #[arg(long, default_value_t = 50)]
+    interval: u64,
+
+    /// Executors to run (comma-separated). Defaults to all.
+    #[arg(long, value_enum, num_args = 1.., value_delimiter = ',')]
+    executors: Vec<Executor>,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value = "table")]
+    format: Format,
+
+    /// Pin bgrt runtimes/threads to efficiency cores (Linux only).
+    #[arg(long)]
+    pin: bool,
+
+    /// Also read CPU power via `powermetrics` (macOS only; needs sudo).
+    #[arg(long)]
+    mac_power: bool,
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+
+    let executors = if args.executors.is_empty() {
+        vec![
+            Executor::Default,
+            Executor::Utility,
+            Executor::Background,
+            Executor::BackgroundThreads,
+        ]
+    } else {
+        args.executors.clone()
+    };
+
+    let cfg = WorkloadConfig {
+        duration: Duration::from_secs_f64(args.duration),
+        sample_interval: Duration::from_millis(args.interval),
+        workers: args.workers.max(1),
+    };
+
+    let mut summaries = Vec::with_capacity(executors.len());
+    for executor in executors {
+        eprintln!("running {} for {:.1}s ...", executor.label(), args.duration);
+        let result = runner::run(executor, cfg, args.pin)?;
+        summaries.push(Summary::from_result(&result));
     }
 
-    let meter = EnergyMeter::start();
-    let s = telemetry::sample();
-    println!(
-        "current sample: cpu={:?}, core_type={:?}, freq_mhz={:?}",
-        s.cpu, s.core_type, s.freq_mhz
-    );
-    match meter.stop_uj() {
-        Some(uj) => println!("energy since start: {uj} µJ"),
-        None => println!("energy: unavailable (needs RAPL access / supported platform)"),
+    match args.format {
+        Format::Table => println!("{}", report::table(&summaries)),
+        Format::Json => println!("{}", report::json(&summaries)?),
+    }
+
+    if let Some(cooler) = report::background_not_hotter(&summaries) {
+        eprintln!(
+            "verdict: background peak frequency {} default",
+            if cooler {
+                "≤ (stayed cool)"
+            } else {
+                "> (ran hot!)"
+            }
+        );
+    }
+
+    report_mac_power(args.mac_power);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn report_mac_power(enabled: bool) {
+    if !enabled {
+        return;
+    }
+    match power_macos::cpu_power_mw() {
+        Some(mw) => eprintln!("CPU power (powermetrics): {mw} mW"),
+        None => eprintln!("CPU power: unavailable (run with sudo; needs powermetrics)"),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn report_mac_power(enabled: bool) {
+    if enabled {
+        eprintln!("--mac-power is only supported on macOS; ignoring");
     }
 }
