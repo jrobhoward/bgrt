@@ -10,3 +10,7 @@ pub enum Error {
     #[error("failed to apply energy qos: {0}")]
     Backend(String),
 }
+
+#[cfg(test)]
+#[path = "error_tests.rs"]
+mod error_tests;

@@ -8,6 +8,17 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Review & hardening — 2026-06-13
+- Confirmed production code is panic-free (no `unwrap`/`expect`/`panic!`/indexing;
+  every FFI return code is checked into `Result`). `unwrap` remains test-only.
+- Enabled `#![warn(missing_docs)]` on the `bgrt` crate (passes under `-Dwarnings`).
+- Refreshed stale docs (crate-level + `backend` module no longer say "Phase 0 /
+  no-op"; `QosClass` table marks Linux E-core affinity as opt-in / not-yet-wired).
+- Added a runnable doctest on `apply` and an `Error` Display test (`error_tests.rs`).
+- Verified across all three targets (macOS run; Linux/Windows cross-check): tests
+  (8 unit + 1 doctest on macOS), clippy `-Dwarnings`, and `cargo doc` (broken-link
+  check) all clean.
+
 ### Phase 1 — QoS backends — 2026-06-13
 - `apply(QosClass)` now does real work per OS (was no-op):
   - **macOS** — `pthread_set_qos_class_self_np`: Background→`QOS_CLASS_BACKGROUND`

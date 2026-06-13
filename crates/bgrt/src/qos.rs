@@ -5,11 +5,14 @@
 ///
 /// Each class maps to a native per-OS facility (see `docs/ROADMAP.md`):
 ///
-/// | Class        | macOS                  | Windows               | Linux                          |
-/// |--------------|------------------------|-----------------------|--------------------------------|
-/// | `Background` | `QOS_CLASS_BACKGROUND` | EcoQoS + below-normal | `nice(19)` + E-core affinity   |
-/// | `Utility`    | `QOS_CLASS_UTILITY`    | EcoQoS + normal       | `nice(10)`                     |
-/// | `Default`    | passthrough            | clear throttling      | `nice(0)`                      |
+/// | Class        | macOS                  | Windows               | Linux                              |
+/// |--------------|------------------------|-----------------------|------------------------------------|
+/// | `Background` | `QOS_CLASS_BACKGROUND` | EcoQoS + below-normal | `nice(19)` (+ opt-in E-core affinity) |
+/// | `Utility`    | `QOS_CLASS_UTILITY`    | EcoQoS + normal       | `nice(10)`                         |
+/// | `Default`    | passthrough            | clear throttling      | `nice(0)`                          |
+///
+/// Efficiency-core affinity is opt-in and not yet wired up (see the runtime
+/// builder, a later phase); today the Linux mapping is niceness only.
 ///
 /// Every `Background` mapping is weighted-fair (not run-only-when-idle), so quiet
 /// work still makes forward progress under contention rather than starving.

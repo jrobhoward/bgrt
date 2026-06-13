@@ -1,9 +1,9 @@
 //! Per-OS dispatch for applying a [`QosClass`] to the current thread.
 //!
 //! Each platform module exposes `apply(QosClass) -> Result<(), Error>` acting on
-//! the calling thread. Phase 0 ships no-op skeletons; Phase 1 fills in the FFI
-//! (macOS `pthread_set_qos_class_self_np`, Linux `setpriority` + affinity,
-//! Windows EcoQoS via `SetThreadInformation`).
+//! the calling thread: macOS via `pthread_set_qos_class_self_np`, Linux via
+//! `setpriority`, Windows via EcoQoS (`SetThreadInformation`) + `SetThreadPriority`.
+//! Any other platform gets a no-op so the API is callable everywhere.
 
 use crate::error::Error;
 use crate::qos::QosClass;

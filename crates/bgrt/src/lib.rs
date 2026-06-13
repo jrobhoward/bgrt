@@ -5,13 +5,14 @@
 //!
 //! The mechanism is a per-thread energy [`QosClass`] applied once when a thread
 //! starts. It maps to the native low-energy facility on each OS — macOS QoS
-//! classes, Windows EcoQoS, Linux `nice` + efficiency-core affinity — and runs
-//! as a regular (non-admin) user.
+//! classes, Windows EcoQoS, Linux `nice` — and runs as a regular (non-admin)
+//! user.
 //!
-//! This is **Phase 0** scaffolding: [`apply`] dispatches to per-OS backends that
-//! are currently no-ops. The QoS backends, tokio [`Runtime`](crate) wrapper,
-//! quiet-thread spawner, and measurement harness land in later phases — see
+//! Today `bgrt` exposes [`apply`], which classifies the **current** thread (see
+//! [`QosClass`] for the per-OS mapping). A tokio runtime wrapper, a quiet-thread
+//! spawner, and a measurement harness land in later phases — see
 //! `docs/ROADMAP.md`.
+#![warn(missing_docs)]
 
 mod backend;
 pub mod error;
@@ -29,6 +30,16 @@ pub use qos::QosClass;
 /// # Errors
 ///
 /// Returns [`Error::Backend`] if the underlying OS call fails.
+///
+/// # Examples
+///
+/// ```
+/// use bgrt::QosClass;
+///
+/// // Make the current thread quiet and energy-efficient.
+/// bgrt::apply(QosClass::Background)?;
+/// # Ok::<(), bgrt::Error>(())
+/// ```
 pub fn apply(class: QosClass) -> Result<(), Error> {
     tracing::trace!(?class, "applying energy qos to current thread");
     backend::apply(class)
