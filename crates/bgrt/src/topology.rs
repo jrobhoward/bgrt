@@ -31,10 +31,19 @@ pub(crate) fn efficiency_cores() -> Vec<usize> {
         };
         caps.push((idx, cap));
     }
+    select_efficiency_cores(caps)
+}
+
+/// Given `(cpu_index, capacity)` pairs, return the CPUs at the **minimum**
+/// capacity (the efficiency cores), or empty if the set is empty or homogeneous
+/// (capacity unavailable, or all cores equal → not a hybrid CPU).
+///
+/// Compiled on Linux (where it backs [`efficiency_cores`]) and under `test`.
+#[cfg(any(target_os = "linux", test))]
+fn select_efficiency_cores(caps: Vec<(usize, u64)>) -> Vec<usize> {
     let min = caps.iter().map(|&(_, c)| c).min().unwrap_or(0);
     let max = caps.iter().map(|&(_, c)| c).max().unwrap_or(0);
     if caps.is_empty() || min == max {
-        // Capacity info unavailable, or all cores equal → not a hybrid CPU.
         return Vec::new();
     }
     caps.into_iter()

@@ -29,6 +29,15 @@ fn classify(class: QosClass, efficiency_cores: &[usize]) {
 /// [`std::thread::spawn`], including that it **panics** if the OS cannot create
 /// the thread; use [`ThreadBuilder::spawn`] for a non-panicking `Result`. It does
 /// not pin to efficiency cores — use [`ThreadBuilder`] for that.
+///
+/// # Examples
+///
+/// ```
+/// use bgrt::QosClass;
+///
+/// let handle = bgrt::spawn_thread(QosClass::Background, || 2 + 2);
+/// assert_eq!(handle.join().unwrap(), 4);
+/// ```
 pub fn spawn_thread<F, T>(class: QosClass, f: F) -> JoinHandle<T>
 where
     F: FnOnce() -> T + Send + 'static,

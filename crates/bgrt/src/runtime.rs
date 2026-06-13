@@ -1,8 +1,8 @@
 //! An energy-classified async runtime that wraps a Tokio runtime.
 //!
-//! Build one with [`Builder`]; every thread the runtime spawns (workers and the
-//! blocking pool) has the configured [`QosClass`] applied at start, so all work
-//! scheduled onto it runs at the chosen energy footprint.
+//! Build one with [`RuntimeBuilder`]; every thread the runtime spawns (workers
+//! and the blocking pool) has the configured [`QosClass`] applied at start, so
+//! all work scheduled onto it runs at the chosen energy footprint.
 
 use std::future::Future;
 
@@ -17,15 +17,29 @@ use crate::topology;
 ///
 /// Defaults: [`QosClass::Background`], one worker thread, efficiency-core pinning
 /// off.
+///
+/// # Examples
+///
+/// ```
+/// use bgrt::{QosClass, RuntimeBuilder};
+///
+/// let rt = RuntimeBuilder::new()
+///     .qos(QosClass::Background)
+///     .worker_threads(1)
+///     .build()?;
+/// let answer = rt.block_on(rt.spawn(async { 21 * 2 }))?;
+/// assert_eq!(answer, 42);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone)]
-pub struct Builder {
+pub struct RuntimeBuilder {
     qos: QosClass,
     worker_threads: usize,
     thread_name: String,
     pin_efficiency_cores: bool,
 }
 
-impl Default for Builder {
+impl Default for RuntimeBuilder {
     fn default() -> Self {
         Self {
             qos: QosClass::Background,
@@ -36,7 +50,7 @@ impl Default for Builder {
     }
 }
 
-impl Builder {
+impl RuntimeBuilder {
     /// Create a builder with default settings.
     pub fn new() -> Self {
         Self::default()

@@ -5,14 +5,14 @@
 //! cargo run --example mixed_runtimes -p bgrt
 //! ```
 
-use bgrt::{Builder, QosClass};
+use bgrt::{QosClass, RuntimeBuilder};
 
 fn main() -> Result<(), bgrt::Error> {
-    let foreground = Builder::new()
+    let foreground = RuntimeBuilder::new()
         .qos(QosClass::Default)
         .thread_name("fg-worker")
         .build()?;
-    let background = Builder::new()
+    let background = RuntimeBuilder::new()
         .qos(QosClass::Background)
         .thread_name("bg-worker")
         .build()?;

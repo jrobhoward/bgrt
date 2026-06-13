@@ -8,6 +8,26 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Review pass — refactor, tests, docs — 2026-06-13
+- **Renamed** `bgrt::Builder` → `bgrt::RuntimeBuilder` (symmetry with
+  `ThreadBuilder`; clearer at the crate root). Updated lib, tests, bench,
+  examples, README.
+- **Testability:** extracted the Linux E-core selection into a pure
+  `topology::select_efficiency_cores`, with unit tests (hybrid / homogeneous /
+  empty / three-tier) that run on any platform.
+- **De-duplicated test helpers** into a `#[cfg(test)] test_support` module
+  (`current_qos` / `current_nice` / QoS constants), removing three copies of the
+  read-back FFI across the backend/runtime/thread test files.
+- **Rustdoc examples (doctests):** added to `RuntimeBuilder`, `spawn_thread`, and
+  a crate-level `# Example`; now 4 doctests run as part of the suite.
+- **Docs:** new [`docs/DESIGN.md`](docs/DESIGN.md) distilling the durable design
+  (mechanism, per-OS mapping, anti-starvation, two-runtime pattern, telemetry
+  matrix, findings, non-goals); README gained a "Limitations & notes" section and
+  links to the design doc; CLAUDE.md cross-links it.
+- **Verified:** `cargo test --workspace` (33 lib + 16 bench + 1 integration + 4
+  doctests), `clippy --workspace --all-targets -- -Dwarnings` (macOS) and
+  `--tests` cross-target (Linux, Windows), examples run, `cargo doc` clean.
+
 ### Phase 6 — Docs, examples, polish — 2026-06-13
 - Added runnable examples: `background_task`, `mixed_runtimes`, `quiet_threads`
   (`cargo run --example <name> -p bgrt`); all run and pass

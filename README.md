@@ -19,8 +19,8 @@ it onto a quiet executor.
 > **Status:** the library (QoS backends, runtime wrapper, quiet-thread spawner)
 > and the measurement harness are implemented and tested; macOS is run-verified
 > (see the M1 numbers below), Linux/Windows are cross-compiled and lint-clean
-> pending CI on real hardware. Plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); state:
-> [`CHANGELOG.md`](CHANGELOG.md).
+> pending CI on real hardware. Design: [`docs/DESIGN.md`](docs/DESIGN.md); plan:
+> [`docs/ROADMAP.md`](docs/ROADMAP.md); state: [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Usage
 
@@ -28,7 +28,7 @@ it onto a quiet executor.
 use bgrt::QosClass;
 
 // A quiet async executor (wraps a tokio runtime).
-let rt = bgrt::Builder::new()
+let rt = bgrt::RuntimeBuilder::new()
     .qos(QosClass::Background)
     .worker_threads(1)
     .build()?;
@@ -127,13 +127,30 @@ RAPL); on **macOS** core/frequency/power need `sudo powermetrics` (use
 `--mac-power`); on **Windows** you get frequency + placement (E/P labelling is a
 TODO). The library itself never needs privileges — only this measurement tool does.
 
+## Limitations & notes
+
+- **Frequency isn't directly controllable** from userspace — `bgrt` *biases*
+  against clocking up (chiefly by keeping work off performance cores); it can't
+  *guarantee* the clock never rises, especially under other system load.
+- **Classification is once-per-thread, by design.** QoS is applied when a runtime
+  worker or thread starts; there's no per-task re-classification. Pick the right
+  runtime/thread for the work. (This also sidesteps that, on Linux, an
+  unprivileged thread can lower its priority but **cannot raise it back**.)
+- **macOS join-promotion:** synchronously waiting on a background thread from a
+  higher-QoS thread can promote it off the efficiency cores (see the benchmarking
+  note above). Async `await` on a background runtime does not.
+- **Telemetry availability varies** (see the table above): Linux is fullest
+  unprivileged; macOS frequency/power/residency need `sudo powermetrics`; Windows
+  reports frequency + CPU index but not yet E/P classification. Linux RAPL energy
+  is often root-only. The *library* never needs privileges — only measurement does.
+
 ## Development
 
 ```bash
 cargo build --workspace
 cargo test --workspace
-cargo clippy --workspace --tests -- -Dwarnings
-cargo run -p bgrt-bench          # comparison harness (work in progress)
+cargo clippy --workspace --all-targets -- -Dwarnings
+cargo run --release -p bgrt-bench -- --duration 3
 ```
 
 Requires Rust ≥ 1.85 (edition 2024). See [`CLAUDE.md`](CLAUDE.md) for

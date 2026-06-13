@@ -9,10 +9,23 @@
 //! user.
 //!
 //! `bgrt` provides an energy-classified async runtime — build one with
-//! [`Builder`] and schedule futures onto it with [`Runtime::spawn`] — a
+//! [`RuntimeBuilder`] and schedule futures onto it with [`Runtime::spawn`] — a
 //! quiet-thread spawner for the non-async path ([`spawn_thread`] /
 //! [`ThreadBuilder`]), and [`apply`], which classifies the **current** thread
-//! directly. A measurement harness lands in a later phase (see `docs/ROADMAP.md`).
+//! directly.
+//!
+//! # Example
+//!
+//! ```
+//! use bgrt::{QosClass, RuntimeBuilder};
+//!
+//! // A quiet, single-worker runtime; its thread runs on efficiency cores at a
+//! // low clock where the OS supports it.
+//! let rt = RuntimeBuilder::new().qos(QosClass::Background).build()?;
+//! let sum = rt.block_on(rt.spawn(async { (0..100u64).sum::<u64>() }))?;
+//! assert_eq!(sum, 4950);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
 #![warn(missing_docs)]
 
 mod backend;
@@ -25,9 +38,12 @@ mod topology;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 
+#[cfg(test)]
+mod test_support;
+
 pub use error::Error;
 pub use qos::QosClass;
-pub use runtime::{Builder, Runtime};
+pub use runtime::{Runtime, RuntimeBuilder};
 pub use thread::{ThreadBuilder, spawn_thread};
 
 /// Apply an energy [`QosClass`] to the **current** thread.

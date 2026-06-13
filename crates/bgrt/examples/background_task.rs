@@ -4,11 +4,11 @@
 //! cargo run --example background_task -p bgrt
 //! ```
 
-use bgrt::{Builder, QosClass};
+use bgrt::{QosClass, RuntimeBuilder};
 
 fn main() -> Result<(), bgrt::Error> {
     // A single-worker runtime whose thread runs at the lowest energy footprint.
-    let rt = Builder::new()
+    let rt = RuntimeBuilder::new()
         .qos(QosClass::Background)
         .worker_threads(1)
         .build()?;

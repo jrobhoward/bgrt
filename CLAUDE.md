@@ -9,8 +9,8 @@ energy footprint — efficiency cores, low clock frequency, no fan spin-up — w
 still making forward progress under load, as a regular (non-admin) user on
 macOS, Windows, and Linux. It **wraps** tokio rather than forking it.
 
-See `docs/ROADMAP.md` for the phased plan and current status, and `CHANGELOG.md`
-for running project state.
+See `docs/DESIGN.md` for the durable design and rationale, `docs/ROADMAP.md` for
+the phased plan and current status, and `CHANGELOG.md` for running project state.
 
 ## Commands
 

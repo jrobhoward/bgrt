@@ -83,7 +83,7 @@ fn run_on_runtime(
     pin: bool,
     mac_power: bool,
 ) -> Result<RunResult, bgrt::Error> {
-    let rt = bgrt::Builder::new()
+    let rt = bgrt::RuntimeBuilder::new()
         .qos(executor.qos())
         .worker_threads(cfg.workers)
         .pin_efficiency_cores(pin)

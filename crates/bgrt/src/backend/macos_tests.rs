@@ -3,24 +3,7 @@
 
 use super::{QOS_CLASS_BACKGROUND, QOS_CLASS_DEFAULT, QOS_CLASS_UTILITY, apply};
 use crate::qos::QosClass;
-
-unsafe extern "C" {
-    fn pthread_get_qos_class_np(
-        thread: libc::pthread_t,
-        qos_class: *mut u32,
-        relative_priority: *mut i32,
-    ) -> i32;
-}
-
-/// Read back the calling thread's effective QoS class.
-fn current_qos() -> u32 {
-    let mut qos: u32 = 0;
-    let mut rel: i32 = 0;
-    // SAFETY: reads the calling thread's QoS into stack-local out-parameters.
-    let rc = unsafe { pthread_get_qos_class_np(libc::pthread_self(), &mut qos, &mut rel) };
-    assert_eq!(rc, 0, "pthread_get_qos_class_np failed: {rc}");
-    qos
-}
+use crate::test_support::current_qos;
 
 // Each test runs on a dedicated thread so it never lowers the test runner's QoS.
 
