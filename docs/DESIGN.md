@@ -156,7 +156,19 @@ frequency/power/residency, and Linux RAPL energy (often root since CVE-2020-8694
   bypass the util signal; needs kernel ≥ 5.8 for `SCHED_FLAG_KEEP_ALL`; and the
   effective cap is bounded by `/proc/sys/kernel/sched_util_clamp_max`. Lowering
   one's own `util_max` is unprivileged. It biases frequency, not CPU-time share,
-  so it composes with `nice` rather than replacing it.
+  so it composes with `nice` rather than replacing it. **Run-verified on an Intel
+  i7-2720QM (Sandy Bridge, homogeneous) with `schedutil`:** background mean clock
+  840 MHz vs 3192 (≈3.8× lower), ≈3.2× less package energy over a fixed 10 s
+  window, at ≈26% throughput.
+- **Frequency-clamping is a stay-cool lever, not a per-work efficiency win (on old
+  silicon).** In the i7-2720QM run above, dividing energy by work shows background
+  spending *slightly more* per work-unit (~88 vs ~74 µJ): at low clocks, fixed and
+  leakage power dominate, so "race to idle" is marginally more efficient for a
+  fixed batch. The win is lower *instantaneous* power (cooler, quieter, doesn't
+  steal thermal/power budget from foreground work), not a smaller battery bill per
+  unit of work. This differs from macOS efficiency-core *placement*, which does cut
+  energy ~4× per unit work — placement and frequency are distinct levers with
+  distinct economics.
 - **Linux RAPL is whole-package on workstation/server CPUs.** On a 16-core
   Threadripper, `energy_uj` reflects the entire package (all cores + memory
   controller + I/O die). Per-thread power attribution is not possible: variance

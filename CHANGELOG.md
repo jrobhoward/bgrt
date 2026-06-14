@@ -27,6 +27,15 @@ the project is pre-1.0 and not yet released.
   "Running on each platform" command cheat-sheet (privilege-free throughput
   everywhere; `--mac-power` + sudo on macOS; `--pin` for hybrid, `--clamp-frequency`
   for homogeneous, sudo for RAPL on Linux) and a homogeneous-CPU clamp note.
+- **Run-verified on Intel i7-2720QM (Sandy Bridge, homogeneous) with `schedutil`
+  + `--clamp-frequency`:** background mean clock 840 MHz vs 3192 (~3.8× lower) and
+  ~3.2× less package energy over a fixed 10 s window, at ~26% throughput — the
+  first measured frequency effect on a homogeneous CPU (where `nice` shows
+  nothing). Results table added to the README. Finding worth keeping: clamping is
+  a *stay-cool / low-power-draw* lever, not a per-unit-work efficiency win — on this
+  old silicon background spends slightly *more* energy per work-unit (~88 vs ~74 µJ)
+  because fixed/leakage power dominates at low clocks (race-to-idle). Documented in
+  the README and `docs/DESIGN.md`.
 - **Tests:** `backend/uclamp_tests.rs` covers the per-class cap mapping and reads
   back `uclamp.max` from `/proc/thread-self/sched` (new `current_uclamp_max()`
   helper), tolerating kernels without `CONFIG_UCLAMP_TASK` / `SCHED_FLAG_KEEP_ALL`.

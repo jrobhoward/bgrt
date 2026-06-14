@@ -195,6 +195,35 @@ a fixed governor or HWP the cap is inert. Check with
 `cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor`. Like the library
 itself, the clamp is unprivileged (it only ever *lowers* `util_max`).
 
+### Measured on Linux / Intel i7-2720QM (homogeneous, with `--clamp-frequency`)
+
+With the `schedutil` governor and `--clamp-frequency`, the homogeneous-CPU null
+result flips to dramatic — here on a 2011 Sandy Bridge i7 (4C/8T, no E-cores):
+
+```text
+executor              wall_ms       work      work/s     %E  mean_mhz  max_mhz  energy_j
+default                 10000    2499377      249935    n/a      3192     3289   184.103
+utility                 10000    2545955      254592    n/a      3245     3289   169.710
+background              10000     651358       65135    n/a       840     2990    57.497
+background-threads      10000     629097       62906    n/a       802     1295    50.947
+verdict: background peak frequency ≤ (stayed cool) default
+```
+
+`Background` ran at a **840 MHz mean clock vs 3192 MHz** for `Default` (~3.8× lower)
+and drew **~3.2× less CPU energy over the 10 s window** (57 J vs 184 J), at ~26% of
+the throughput. This is `uclamp` doing exactly what `nice` alone could not on a
+homogeneous CPU. `Utility` is left unclamped by design and tracks `Default`.
+
+**Honest caveat — this is a stay-cool / low-power-draw lever, not a per-unit-work
+efficiency win.** Dividing energy by work, `Background` here actually spends
+*slightly more* per work-unit (~88 vs ~74 µJ): at low clocks, fixed and leakage
+power dominate, so on this old silicon "race to idle" would finish a fixed batch
+for marginally less total energy. The payoff is lower *instantaneous* power, a
+cooler and quieter machine, and not stealing thermal/power budget from foreground
+work — not a smaller battery bill for a fixed amount of work. (Contrast the macOS
+result above, where efficiency-core *placement* cuts energy ~4× **per unit of
+work**: a different mechanism with a different trade-off.)
+
 **What's measurable per platform** (anything unavailable shows `n/a` / `null`,
 never an error):
 
