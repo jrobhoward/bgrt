@@ -195,6 +195,27 @@ a fixed governor or HWP the cap is inert. Check with
 `cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor`. Like the library
 itself, the clamp is unprivileged (it only ever *lowers* `util_max`).
 
+### Measured on Linux / AMD Threadripper (homogeneous, with `sudo … --clamp-frequency`)
+
+Same machine, `schedutil` governor confirmed, 10 s run with `sudo` so RAPL energy
+is available:
+
+```text
+executor              wall_ms       work      work/s     %E  mean_mhz  max_mhz  energy_j
+default                 10000    2898328      289830    n/a      3685     3692   605.257
+utility                 10000    2898107      289809    n/a      3685     3692   614.536
+background              10000    1717806      171779    n/a      2188     2200   492.676
+background-threads      10000    1723344      172331    n/a      2195     2200   485.833
+verdict: background peak frequency ≤ (stayed cool) default
+```
+
+`uclamp` does bite on Threadripper too: `Background` ran at **2188 MHz mean vs 3685 MHz**
+for `Default` (~1.7× lower clock) and drew **~1.2× less package energy** (493 J vs 605 J
+over 10 s), at ~59% of the throughput. The frequency drop is shallower than on the Sandy
+Bridge i7 below — Threadripper's 16-core package has much higher fixed power, so the
+per-core clock reduction moves the package needle less. Per-unit-work energy is modestly
+*worse* for `Background` on this machine for the same reason as the i7 (see caveat below).
+
 ### Measured on Linux / Intel i7-2720QM (homogeneous, with `--clamp-frequency`)
 
 With the `schedutil` governor and `--clamp-frequency`, the homogeneous-CPU null
