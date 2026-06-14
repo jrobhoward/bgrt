@@ -8,7 +8,7 @@ it onto a quiet executor.
 
 - **Per-thread energy QoS** — classify work as `Background`, `Utility`, or
   `Default`, mapped to each OS's native facility: macOS QoS classes, Windows
-  EcoQoS, Linux `nice` + efficiency-core affinity.
+  EcoQoS, Linux `nice` (+ opt-in efficiency-core affinity and `uclamp` frequency cap).
 - **No admin required** — the library only ever *lowers* its own threads' demands.
 - **Wraps tokio, integrates with rayon** — an energy-classified async runtime,
   a quiet rayon thread pool for parallel iterators, and a quiet OS-thread spawner
@@ -74,7 +74,7 @@ Runnable examples (`cargo run --example <name> -p bgrt`):
 
 | Class | macOS | Windows | Linux |
 |---|---|---|---|
-| `Background` | `QOS_CLASS_BACKGROUND` (efficiency cores) | EcoQoS + below-normal | `nice(19)` + opt-in E-core affinity |
+| `Background` | `QOS_CLASS_BACKGROUND` (efficiency cores) | EcoQoS + below-normal | `nice(19)` + opt-in E-core affinity + opt-in `uclamp` frequency cap |
 | `Utility` | `QOS_CLASS_UTILITY` | EcoQoS + normal | `nice(10)` |
 | `Default` | none | none | `nice(0)` |
 
@@ -99,7 +99,39 @@ efficiency-core confinement, measured without any privileged telemetry.
 
 Flags: `--executors default,utility,background,background-threads` (subset/order),
 `--workers <n>`, `--format json`, `--interval <ms>` (sampling), `--pin` (Linux
-E-core affinity), `--mac-power` (macOS `%E`/frequency/power via `powermetrics`).
+E-core affinity), `--clamp-frequency` (Linux `uclamp` frequency cap on background
+work), `--mac-power` (macOS `%E`/frequency/power via `powermetrics`).
+
+### Running on each platform
+
+The privilege-free **`work/s`** comparison runs the same way everywhere; the
+extra flags unlock platform-specific placement/frequency/energy detail.
+
+```bash
+# Any platform — throughput comparison, no privileges, no extra flags:
+cargo run --release -p bgrt-bench -- --duration 3
+
+# macOS — add %E / frequency / CPU power from powermetrics (needs sudo).
+# Build first, then run the *binary* under sudo: `cargo run` as root would
+# rebuild as root and may not find your toolchain.
+cargo build --release -p bgrt-bench
+sudo ./target/release/bgrt-bench --duration 3 --mac-power
+
+# Linux, hybrid CPU (P+E, e.g. Alder/Raptor/Meteor Lake) — pin to E-cores:
+cargo run --release -p bgrt-bench -- --duration 3 --pin
+
+# Linux, homogeneous CPU (no E-cores) — uclamp is the only frequency lever;
+# needs the schedutil governor + kernel >= 5.8 to bite (see note below):
+cargo run --release -p bgrt-bench -- --duration 3 --clamp-frequency
+
+# Linux — RAPL energy fills in automatically when readable; if it shows n/a,
+# the counters need root: build, then run the binary under sudo:
+cargo build --release -p bgrt-bench
+sudo ./target/release/bgrt-bench --duration 3
+
+# Windows — frequency + placement are unprivileged; just run it:
+cargo run --release -p bgrt-bench -- --duration 3
+```
 
 ### Measured on an Apple M1 (with `sudo … --mac-power`)
 
@@ -154,6 +186,14 @@ The `energy_j` variance (<3%) is measurement noise from RAPL reading the entire
 16-core package, not per-thread power. Meaningful Linux results need a
 heterogeneous (P+E) CPU (Alder Lake, Raptor Lake, Meteor Lake) or a CPU-loaded
 machine where scheduling priority actually changes which threads run.
+
+To get a *frequency* effect on a homogeneous CPU, add `--clamp-frequency`: it
+applies a `uclamp` cap to background work so the governor picks a lower clock even
+at 100% busy (`nice` alone gives the governor no frequency input). It only bites
+with the `schedutil` governor (or `intel_pstate=passive`) on kernel ≥ 5.8 — under
+a fixed governor or HWP the cap is inert. Check with
+`cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor`. Like the library
+itself, the clamp is unprivileged (it only ever *lowers* `util_max`).
 
 **What's measurable per platform** (anything unavailable shows `n/a` / `null`,
 never an error):

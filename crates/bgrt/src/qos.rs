@@ -5,14 +5,16 @@
 ///
 /// Each class maps to a native per-OS facility (see `docs/ROADMAP.md`):
 ///
-/// | Class        | macOS                  | Windows               | Linux                              |
-/// |--------------|------------------------|-----------------------|------------------------------------|
-/// | `Background` | `QOS_CLASS_BACKGROUND` | EcoQoS + below-normal | `nice(19)` (+ opt-in E-core affinity) |
-/// | `Utility`    | `QOS_CLASS_UTILITY`    | EcoQoS + normal       | `nice(10)`                         |
-/// | `Default`    | passthrough            | clear throttling      | `nice(0)`                          |
+/// | Class        | macOS                  | Windows               | Linux                                              |
+/// |--------------|------------------------|-----------------------|----------------------------------------------------|
+/// | `Background` | `QOS_CLASS_BACKGROUND` | EcoQoS + below-normal | `nice(19)` (+ opt-in E-core affinity, `uclamp` cap) |
+/// | `Utility`    | `QOS_CLASS_UTILITY`    | EcoQoS + normal       | `nice(10)`                                         |
+/// | `Default`    | passthrough            | clear throttling      | `nice(0)`                                          |
 ///
-/// Efficiency-core affinity is opt-in and not yet wired up (see the runtime
-/// builder, a later phase); today the Linux mapping is niceness only.
+/// On Linux the base mapping is niceness; efficiency-core affinity and a
+/// `uclamp` frequency cap are both opt-in per builder (`pin_efficiency_cores`,
+/// `clamp_frequency`). The `uclamp` cap is the only lever that lowers clocks on
+/// homogeneous CPUs, where `nice` alone leaves frequency untouched.
 ///
 /// Every `Background` mapping is weighted-fair (not run-only-when-idle), so quiet
 /// work still makes forward progress under contention rather than starving.

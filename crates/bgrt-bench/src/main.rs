@@ -58,6 +58,11 @@ struct Args {
     #[arg(long)]
     pin: bool,
 
+    /// Cap background threads' CPU frequency via `uclamp` (Linux only; needs the
+    /// schedutil governor and kernel ≥ 5.8 to take effect).
+    #[arg(long)]
+    clamp_frequency: bool,
+
     /// Also sample CPU power/frequency via `powermetrics` (macOS only; needs sudo).
     #[arg(long)]
     mac_power: bool,
@@ -68,6 +73,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if args.mac_power && !cfg!(target_os = "macos") {
         eprintln!("--mac-power is only supported on macOS; ignoring");
+    }
+    if args.clamp_frequency && !cfg!(target_os = "linux") {
+        eprintln!("--clamp-frequency only affects Linux; it is a no-op elsewhere");
     }
 
     let executors = if args.executors.is_empty() {
@@ -90,7 +98,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut summaries = Vec::with_capacity(executors.len());
     for executor in executors {
         eprintln!("running {} for {:.1}s ...", executor.label(), args.duration);
-        let result = runner::run(executor, cfg, args.pin, args.mac_power)?;
+        let result = runner::run(
+            executor,
+            cfg,
+            args.pin,
+            args.clamp_frequency,
+            args.mac_power,
+        )?;
         summaries.push(Summary::from_result(&result));
     }
 

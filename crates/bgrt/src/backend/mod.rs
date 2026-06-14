@@ -12,8 +12,13 @@ use crate::qos::QosClass;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+mod uclamp;
 #[cfg(target_os = "windows")]
 mod windows;
+
+/// Opt-in Linux utilization clamp (a frequency hint); a no-op on other
+/// platforms. See [`uclamp`] for the rationale.
+pub(crate) use uclamp::clamp_current_thread;
 
 #[cfg(target_os = "macos")]
 pub(crate) fn apply(class: QosClass) -> Result<(), Error> {

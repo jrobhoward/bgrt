@@ -30,6 +30,20 @@ pub fn current_qos() -> u32 {
     qos
 }
 
+/// Read the calling thread's `uclamp.max` (0..=1024) from
+/// `/proc/thread-self/sched`, or `None` if the kernel lacks `CONFIG_UCLAMP_TASK`
+/// (in which case the line is absent and the clamp is inert).
+#[cfg(target_os = "linux")]
+pub fn current_uclamp_max() -> Option<u32> {
+    let sched = std::fs::read_to_string("/proc/thread-self/sched").ok()?;
+    sched
+        .lines()
+        .find_map(|line| line.strip_prefix("uclamp.max"))
+        // Lines read "uclamp.max  :  1024"; take the value after the colon.
+        .and_then(|rest| rest.rsplit(':').next())
+        .and_then(|v| v.trim().parse().ok())
+}
+
 /// Read the calling thread's nice value, -20..=19 (Linux).
 #[cfg(target_os = "linux")]
 pub fn current_nice() -> i32 {

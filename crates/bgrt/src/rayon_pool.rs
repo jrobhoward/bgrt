@@ -34,6 +34,7 @@ pub struct RayonBuilder {
     num_threads: Option<usize>,
     thread_name: Option<String>,
     pin_efficiency_cores: bool,
+    clamp_frequency: bool,
 }
 
 impl Default for RayonBuilder {
@@ -43,6 +44,7 @@ impl Default for RayonBuilder {
             num_threads: None,
             thread_name: None,
             pin_efficiency_cores: false,
+            clamp_frequency: false,
         }
     }
 }
@@ -80,6 +82,17 @@ impl RayonBuilder {
         self
     }
 
+    /// On Linux, also cap pool threads' CPU frequency via `uclamp` (a
+    /// utilization clamp) for the [`QosClass::Background`] class — the only lever
+    /// that lowers clocks on homogeneous CPUs, where `nice` leaves frequency
+    /// untouched. No-op on macOS/Windows (their QoS/EcoQoS throttle frequency
+    /// directly), for other classes, and on kernels or governors without uclamp
+    /// support. Opt-in; off by default.
+    pub fn clamp_frequency(mut self, clamp: bool) -> Self {
+        self.clamp_frequency = clamp;
+        self
+    }
+
     /// Build the pool.
     ///
     /// # Errors
@@ -87,6 +100,7 @@ impl RayonBuilder {
     /// Returns [`Error::ThreadPool`] if rayon cannot create the pool.
     pub fn build(self) -> Result<RayonPool, Error> {
         let qos = self.qos;
+        let clamp_frequency = self.clamp_frequency;
         let efficiency_cores = if self.pin_efficiency_cores {
             topology::efficiency_cores()
         } else {
@@ -110,6 +124,11 @@ impl RayonBuilder {
             if !efficiency_cores.is_empty() {
                 if let Err(e) = topology::pin_current_thread(&efficiency_cores) {
                     tracing::warn!(error = %e, "bgrt: failed to pin rayon thread to efficiency cores");
+                }
+            }
+            if clamp_frequency {
+                if let Err(e) = crate::backend::clamp_current_thread(qos) {
+                    tracing::warn!(error = %e, "bgrt: failed to clamp rayon thread frequency");
                 }
             }
         });

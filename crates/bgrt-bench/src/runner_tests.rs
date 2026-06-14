@@ -16,7 +16,9 @@ fn short_cfg() -> WorkloadConfig {
 
 #[test]
 fn run____background_runtime____produces_result_with_work_and_samples() {
-    let r = run(Executor::Background, short_cfg(), false, false).unwrap();
+    // clamp = true exercises the uclamp wiring (best-effort: a no-op off Linux
+    // and on kernels/governors without uclamp, so it never changes the result).
+    let r = run(Executor::Background, short_cfg(), false, true, false).unwrap();
     assert!(r.work_units >= 1);
     assert!(r.aggregate.samples() >= 1);
     assert!(r.wall >= Duration::from_millis(60));
@@ -24,7 +26,14 @@ fn run____background_runtime____produces_result_with_work_and_samples() {
 
 #[test]
 fn run____background_threads____produces_result_with_work() {
-    let r = run(Executor::BackgroundThreads, short_cfg(), false, false).unwrap();
+    let r = run(
+        Executor::BackgroundThreads,
+        short_cfg(),
+        false,
+        false,
+        false,
+    )
+    .unwrap();
     assert!(r.work_units >= 1);
     assert!(r.wall >= Duration::from_millis(60));
 }

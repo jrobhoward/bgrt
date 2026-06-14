@@ -69,11 +69,12 @@ pub fn run(
     executor: Executor,
     cfg: WorkloadConfig,
     pin: bool,
+    clamp: bool,
     mac_power: bool,
 ) -> Result<RunResult, bgrt::Error> {
     match executor {
-        Executor::BackgroundThreads => Ok(run_on_threads(executor, cfg, pin, mac_power)),
-        _ => run_on_runtime(executor, cfg, pin, mac_power),
+        Executor::BackgroundThreads => Ok(run_on_threads(executor, cfg, pin, clamp, mac_power)),
+        _ => run_on_runtime(executor, cfg, pin, clamp, mac_power),
     }
 }
 
@@ -81,12 +82,14 @@ fn run_on_runtime(
     executor: Executor,
     cfg: WorkloadConfig,
     pin: bool,
+    clamp: bool,
     mac_power: bool,
 ) -> Result<RunResult, bgrt::Error> {
     let rt = bgrt::RuntimeBuilder::new()
         .qos(executor.qos())
         .worker_threads(cfg.workers)
         .pin_efficiency_cores(pin)
+        .clamp_frequency(clamp)
         .build()?;
 
     let agg = Arc::new(Mutex::new(Aggregate::default()));
@@ -126,6 +129,7 @@ fn run_on_threads(
     executor: Executor,
     cfg: WorkloadConfig,
     pin: bool,
+    clamp: bool,
     mac_power: bool,
 ) -> RunResult {
     let agg = Arc::new(Mutex::new(Aggregate::default()));
@@ -139,6 +143,7 @@ fn run_on_threads(
         let spawned = bgrt::ThreadBuilder::new()
             .qos(executor.qos())
             .pin_efficiency_cores(pin)
+            .clamp_frequency(clamp)
             .spawn(move || workload::run(cfg, &agg));
         match spawned {
             Ok(h) => handles.push(h),

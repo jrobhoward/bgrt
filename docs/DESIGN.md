@@ -22,7 +22,10 @@ it onto a quiet executor.
 - Wrap tokio, don't fork it.
 
 **Non-goals**
-- Direct CPU frequency/governor control (not possible per-thread, unprivileged).
+- Setting an explicit CPU frequency or switching the governor (firmware/governor
+  territory, system-wide). We do express a per-thread *frequency bias*: on Linux
+  the opt-in `uclamp` cap (`clamp_frequency`) lowers the clock the governor picks
+  for a `Background` thread — a hint, not a set point, and unprivileged.
 - A hard CPU-time quota (e.g. "30% of a core"). That's a separate axis; on Linux
   it belongs to cgroups, and it isn't the "stay cool" goal. Deliberately omitted.
 - Dynamic per-*task* re-classification. Classification is per-thread, set once.
@@ -145,6 +148,15 @@ frequency/power/residency, and Linux RAPL energy (often root since CVE-2020-8694
   and RAPL energy are indistinguishable from nice 0. Meaningful Linux results require
   a heterogeneous (P+E) CPU (Alder Lake, Raptor Lake) — where E-core affinity via
   `sched_setaffinity` is the real lever — or a CPU-loaded machine.
+- **`uclamp` is the homogeneous-CPU frequency lever.** Where `nice` gives the
+  cpufreq governor no input, the opt-in `clamp_frequency` (`sched_setattr` with
+  `SCHED_FLAG_UTIL_CLAMP_MAX`) caps a `Background` thread's `util_max` (~20%), so
+  `schedutil` selects a lower OPP even at 100% busy. Caveats: needs the
+  `schedutil` governor (or `intel_pstate=passive`) — fixed governors and HWP
+  bypass the util signal; needs kernel ≥ 5.8 for `SCHED_FLAG_KEEP_ALL`; and the
+  effective cap is bounded by `/proc/sys/kernel/sched_util_clamp_max`. Lowering
+  one's own `util_max` is unprivileged. It biases frequency, not CPU-time share,
+  so it composes with `nice` rather than replacing it.
 - **Linux RAPL is whole-package on workstation/server CPUs.** On a 16-core
   Threadripper, `energy_uj` reflects the entire package (all cores + memory
   controller + I/O die). Per-thread power attribution is not possible: variance

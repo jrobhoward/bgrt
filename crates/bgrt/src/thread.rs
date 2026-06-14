@@ -9,16 +9,22 @@ use std::thread::{self, JoinHandle};
 use crate::qos::QosClass;
 use crate::topology;
 
-/// Apply the energy class (and, if requested, efficiency-core pinning) to the
-/// **current** thread. Best-effort: warns on failure rather than aborting, since
-/// QoS/affinity are optimizations, not correctness.
-fn classify(class: QosClass, efficiency_cores: &[usize]) {
+/// Apply the energy class (and, if requested, efficiency-core pinning and a
+/// frequency clamp) to the **current** thread. Best-effort: warns on failure
+/// rather than aborting, since QoS/affinity/clamp are optimizations, not
+/// correctness.
+fn classify(class: QosClass, efficiency_cores: &[usize], clamp_frequency: bool) {
     if let Err(e) = crate::apply(class) {
         tracing::warn!(error = %e, "bgrt: failed to apply qos to thread");
     }
     if !efficiency_cores.is_empty() {
         if let Err(e) = topology::pin_current_thread(efficiency_cores) {
             tracing::warn!(error = %e, "bgrt: failed to pin thread to efficiency cores");
+        }
+    }
+    if clamp_frequency {
+        if let Err(e) = crate::backend::clamp_current_thread(class) {
+            tracing::warn!(error = %e, "bgrt: failed to clamp thread frequency");
         }
     }
 }
@@ -44,7 +50,7 @@ where
     T: Send + 'static,
 {
     thread::spawn(move || {
-        classify(class, &[]);
+        classify(class, &[], false);
         f()
     })
 }
@@ -52,13 +58,14 @@ where
 /// Builder for an energy-classified OS thread.
 ///
 /// Defaults: [`QosClass::Background`], no name, default stack size,
-/// efficiency-core pinning off.
+/// efficiency-core pinning off, frequency clamp off.
 #[derive(Debug, Clone)]
 pub struct ThreadBuilder {
     qos: QosClass,
     name: Option<String>,
     stack_size: Option<usize>,
     pin_efficiency_cores: bool,
+    clamp_frequency: bool,
 }
 
 impl Default for ThreadBuilder {
@@ -68,6 +75,7 @@ impl Default for ThreadBuilder {
             name: None,
             stack_size: None,
             pin_efficiency_cores: false,
+            clamp_frequency: false,
         }
     }
 }
@@ -103,8 +111,19 @@ impl ThreadBuilder {
         self
     }
 
-    /// Spawn the thread, running `f`. The QoS class (and pinning, if enabled) is
-    /// applied before `f` runs.
+    /// On Linux, also cap the spawned thread's CPU frequency via `uclamp` (a
+    /// utilization clamp) for the [`QosClass::Background`] class. This is the
+    /// only lever that lowers clocks on homogeneous CPUs, where `nice` alone
+    /// leaves frequency untouched. No-op on macOS/Windows (their QoS/EcoQoS
+    /// throttle frequency directly), for other classes, and on kernels or
+    /// governors without uclamp support. Opt-in; off by default.
+    pub fn clamp_frequency(mut self, clamp: bool) -> Self {
+        self.clamp_frequency = clamp;
+        self
+    }
+
+    /// Spawn the thread, running `f`. The QoS class (and pinning/clamp, if
+    /// enabled) is applied before `f` runs.
     ///
     /// # Errors
     ///
@@ -116,6 +135,7 @@ impl ThreadBuilder {
         T: Send + 'static,
     {
         let qos = self.qos;
+        let clamp_frequency = self.clamp_frequency;
         let efficiency_cores = if self.pin_efficiency_cores {
             topology::efficiency_cores()
         } else {
@@ -131,7 +151,7 @@ impl ThreadBuilder {
         }
 
         builder.spawn(move || {
-            classify(qos, &efficiency_cores);
+            classify(qos, &efficiency_cores, clamp_frequency);
             f()
         })
     }

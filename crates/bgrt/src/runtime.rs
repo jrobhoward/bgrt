@@ -16,7 +16,7 @@ use crate::topology;
 /// Builder for an energy-classified [`Runtime`].
 ///
 /// Defaults: [`QosClass::Background`], one worker thread, efficiency-core pinning
-/// off.
+/// off, frequency clamp off.
 ///
 /// # Examples
 ///
@@ -37,6 +37,7 @@ pub struct RuntimeBuilder {
     worker_threads: usize,
     thread_name: String,
     pin_efficiency_cores: bool,
+    clamp_frequency: bool,
 }
 
 impl Default for RuntimeBuilder {
@@ -46,6 +47,7 @@ impl Default for RuntimeBuilder {
             worker_threads: 1,
             thread_name: "bgrt-worker".to_owned(),
             pin_efficiency_cores: false,
+            clamp_frequency: false,
         }
     }
 }
@@ -82,6 +84,17 @@ impl RuntimeBuilder {
         self
     }
 
+    /// On Linux, also cap runtime threads' CPU frequency via `uclamp` (a
+    /// utilization clamp) for the [`QosClass::Background`] class — the only lever
+    /// that lowers clocks on homogeneous CPUs, where `nice` leaves frequency
+    /// untouched. No-op on macOS/Windows (their QoS/EcoQoS throttle frequency
+    /// directly), for other classes, and on kernels or governors without uclamp
+    /// support. Opt-in; off by default.
+    pub fn clamp_frequency(mut self, clamp: bool) -> Self {
+        self.clamp_frequency = clamp;
+        self
+    }
+
     /// Build the runtime.
     ///
     /// # Errors
@@ -89,6 +102,7 @@ impl RuntimeBuilder {
     /// Returns [`Error::Runtime`] if the underlying Tokio runtime cannot be built.
     pub fn build(self) -> Result<Runtime, Error> {
         let qos = self.qos;
+        let clamp_frequency = self.clamp_frequency;
         // tokio panics on a worker count of 0; clamp to keep `build` total.
         let workers = self.worker_threads.max(1);
         let efficiency_cores = if self.pin_efficiency_cores {
@@ -102,13 +116,18 @@ impl RuntimeBuilder {
             .thread_name(self.thread_name)
             .on_thread_start(move || {
                 // Runs on every runtime thread (workers and the blocking pool).
-                // QoS/affinity are best-effort optimizations: warn, don't abort.
+                // QoS/affinity/clamp are best-effort optimizations: warn, don't abort.
                 if let Err(e) = crate::apply(qos) {
                     tracing::warn!(error = %e, "bgrt: failed to apply qos to runtime thread");
                 }
                 if !efficiency_cores.is_empty() {
                     if let Err(e) = topology::pin_current_thread(&efficiency_cores) {
                         tracing::warn!(error = %e, "bgrt: failed to pin thread to efficiency cores");
+                    }
+                }
+                if clamp_frequency {
+                    if let Err(e) = crate::backend::clamp_current_thread(qos) {
+                        tracing::warn!(error = %e, "bgrt: failed to clamp thread frequency");
                     }
                 }
             })

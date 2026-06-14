@@ -8,6 +8,33 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Opt-in Linux `uclamp` frequency clamp — 2026-06-13
+- **New `clamp_frequency(bool)` builder option** on `RuntimeBuilder`,
+  `RayonBuilder`, and `ThreadBuilder` (opt-in, default off). On Linux it caps a
+  `Background` thread's `util_max` via `sched_setattr`
+  (`SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP_MAX`, ~20% of
+  `SCHED_CAPACITY_SCALE`), biasing the cpufreq governor toward a lower clock —
+  the only lever that lowers frequency on homogeneous CPUs, where `nice` has no
+  frequency effect. `Utility`/`Default` are left unclamped.
+- **`backend/uclamp.rs`:** declares `struct sched_attr` (no `libc` wrapper) and
+  calls `sched_setattr` through `libc::syscall`. Best-effort: ENOSYS/EINVAL/E2BIG/
+  EPERM/EOPNOTSUPP (pre-uclamp or pre-5.8 kernels, sandboxes) degrade to a no-op.
+  Only ever *lowers* `util_max`, so it stays unprivileged. No-op off Linux.
+- **Caveat (documented):** effect requires the `schedutil` governor (or
+  `intel_pstate=passive`); fixed governors and HWP bypass the util signal.
+- **`bgrt-bench --clamp-frequency`:** new flag that routes the clamp through the
+  runtime/thread runners (warns it's a no-op off Linux). README gains a
+  "Running on each platform" command cheat-sheet (privilege-free throughput
+  everywhere; `--mac-power` + sudo on macOS; `--pin` for hybrid, `--clamp-frequency`
+  for homogeneous, sudo for RAPL on Linux) and a homogeneous-CPU clamp note.
+- **Tests:** `backend/uclamp_tests.rs` covers the per-class cap mapping and reads
+  back `uclamp.max` from `/proc/thread-self/sched` (new `current_uclamp_max()`
+  helper), tolerating kernels without `CONFIG_UCLAMP_TASK` / `SCHED_FLAG_KEEP_ALL`.
+- **Verified:** `cargo clippy -p bgrt --all-features --tests` clean on host
+  (macOS) and on the `x86_64-unknown-linux-gnu` / `x86_64-pc-windows-msvc`
+  targets; `cargo test -p bgrt --all-features` passes on macOS (the Linux-only
+  uclamp tests compile under the Linux target but execute on Linux/CI).
+
 ### Optional features, rayon integration, Linux run — 2026-06-13
 - **Optional `tokio` feature (default on):** `RuntimeBuilder`/`Runtime` now live
   behind `features = ["tokio"]` (enabled by default). Users who only need
