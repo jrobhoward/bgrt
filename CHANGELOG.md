@@ -8,6 +8,43 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Windows E/P core classification — 2026-07-25
+- **`telemetry::CoreType` is no longer `Unknown` on Windows.** `topology::
+  efficiency_cores()` gained a Windows implementation over the CPU Sets API
+  (`GetSystemCpuSetInformation` → `SYSTEM_CPU_SET_INFORMATION.EfficiencyClass`),
+  closing the last deferral from Phase 4/5. Unprivileged, like everything else
+  the library does.
+- **Both platforms share one decision function.** Windows' `EfficiencyClass` and
+  Linux's sysfs `cpu_capacity` are both "higher is faster" scales, so both now
+  feed the existing pure `select_efficiency_cores`: minimum value wins, and an
+  all-equal machine reports *homogeneous* (empty) rather than "every core is an
+  efficiency core". That reuse is why the logic is already unit-tested on
+  hardware that has neither topology.
+- **Limited to processor group 0, deliberately.** `LogicalProcessorIndex` is
+  group-relative and so is `GetCurrentProcessorNumber`, which telemetry compares
+  it against; mixing groups would silently alias CPU 3 of group 0 with CPU 3 of
+  group 1. Only >64-logical-processor systems are affected, and hybrid consumer
+  CPUs — the entire point of the lookup — are single-group.
+- **Detection ≠ pinning.** `pin_efficiency_cores` remains a Linux-only no-op even
+  now that Windows detection works: EcoQoS already places work on efficient
+  cores, and a hard affinity mask would fight the scheduler rather than help it.
+  Knowing which cores are efficient is not a reason to start overriding an OS
+  that is already doing the job.
+- **The FFI buffer walk is defensive:** size query first (records are
+  variable-length, so the count isn't derivable from the CPU count), allocation
+  typed as `SYSTEM_CPU_SET_INFORMATION` so it carries the struct's alignment,
+  `read_unaligned` anyway since records are only guaranteed `Size` apart, the
+  returned length clamped to what was actually allocated, and a bail-out on any
+  record too short to advance the cursor.
+- **Two new Windows tests, which CI is the only place that runs them:** the CPU
+  set read reports each logical processor exactly once with indices dense from 0
+  (what makes them comparable with `GetCurrentProcessorNumber`), and the derived
+  E-core set is always a *strict* subset of all CPUs — the assertion that catches
+  a homogeneous machine leaking through as "everything is an E-core".
+  - **Honest limit:** CI runners are homogeneous VMs, so the branch that actually
+    labels a core "efficiency" is still only covered by unit tests of the
+    selector. Recorded in the README alongside the hybrid-Linux caveat.
+
 ### Current-thread runtime, on a thread bgrt owns — 2026-07-25
 - **`RuntimeBuilder::current_thread(bool)`** — supersedes the "no current-thread
   runtime" decision recorded below. The objection there was never to the

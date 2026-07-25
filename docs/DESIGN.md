@@ -95,7 +95,8 @@ A `bgrt` library crate plus a `bgrt-bench` measurement binary.
   `par_iter`/`join`/`scope` work through the quiet threads.
 - `thread` — `spawn_thread` / `ThreadBuilder` for the non-async, non-rayon path.
   Available with no feature flags.
-- `topology` — efficiency-core detection (Linux sysfs `cpu_capacity`) + affinity.
+- `topology` — efficiency-core detection (Linux sysfs `cpu_capacity`, Windows
+  `GetSystemCpuSetInformation`) + Linux-only affinity.
 - `telemetry` (feature `telemetry`, opt-in) — measurement primitives for the harness.
 
 ### The two-runtime pattern
@@ -141,13 +142,28 @@ costs the same single thread (measured: both modes are `+1`) without the hazard
 that one blocking task stalls every other task. Reach for `current_thread` only
 when single-threaded task semantics are actually wanted.
 
-### Efficiency-core affinity (opt-in, Linux)
+### Efficiency-core detection vs. pinning
 
-`pin_efficiency_cores(true)` adds `sched_setaffinity` to the detected E-core set
-on Linux. It's **opt-in and off by default**: macOS/Windows already place work
-via QoS/EcoQoS, and pinning is a hard restriction that can hurt if the E-cores
-are saturated. E-cores are detected as the minimum-capacity CPUs in sysfs
-`cpu_capacity` (homogeneous/unknown ⇒ no pinning).
+These are deliberately separate concerns, and they have different platform
+support.
+
+**Detection** answers "which CPUs are the little ones" and is used by telemetry
+to label samples. Linux reads sysfs `cpu_capacity`; Windows reads
+`EfficiencyClass` from `GetSystemCpuSetInformation`. Both scales are "higher is
+faster", so both reduce to the same pure function — the CPUs at the minimum
+value, with an all-equal machine reported as homogeneous (empty set) rather than
+as "everything is an E-core". Keeping that decision in one testable function is
+what lets it be verified on a machine with neither topology. macOS has no
+unprivileged equivalent, so detection returns empty there.
+
+**Pinning** is Linux only. `pin_efficiency_cores(true)` adds `sched_setaffinity`
+to the detected E-core set; it is **opt-in and off by default**, because pinning
+is a hard restriction that hurts when the E-cores are saturated. It stays a no-op
+on macOS and Windows *even now that Windows detection works*: QoS and EcoQoS
+already place work on efficient cores, and a hard affinity mask would fight the
+scheduler's own hybrid placement rather than assist it. Knowing which cores are
+efficient is not a reason to start overriding an OS that is already doing the
+job.
 
 ## Measurement (telemetry + harness)
 

@@ -157,7 +157,7 @@ Dev: `rstest`, `tempfile`. Release profile: `strip`, `lto`, `codegen-units = 1`.
 | 4 | Telemetry (core / frequency / power)        | ✅ Done (primitives; Sampler orchestration + macOS powermetrics → Phase 5) |
 | 5 | Comparison harness (`bgrt-bench`)           | ✅ Done (table/JSON + verdict + integration test; macOS run, Linux/Windows cross-check) |
 | 6 | Docs, examples, polish                      | ✅ Done (examples run/lint clean; README incl. M1 results; CLAUDE.md refreshed) |
-| 7 | Road to 1.0 (CI, licensing, API freeze)     | 🔶 In progress — CI matrix, licenses/packaging, error causes, shutdown control, and `current_thread` done; **remaining: hybrid-Linux verification (blocked on P+E hardware, now documented as unmeasured) and Windows E/P telemetry classification** |
+| 7 | Road to 1.0 (CI, licensing, API freeze)     | ✅ Done — CI matrix, licenses/packaging, error causes, shutdown control, `current_thread`, Windows E/P telemetry. **Only hardware-blocked item left: running `--pin` on a real P+E Linux box, now documented as unmeasured rather than implied.** |
 
 Legend: ⬜ not started · 🔶 in progress · ✅ done. Update this table **and**
 `CHANGELOG.md` as each phase lands.
@@ -245,8 +245,8 @@ pretty JSON, and the `background_not_hotter` verdict). CLI: `--duration`,
 Integration test (`tests/comparison.rs`) runs the built binary and asserts
 background peak freq ≤ default, skipping where frequency telemetry is absent.
 The macOS `powermetrics` reader is a tested, defensive `--mac-power` opt-in
-(graceful no-sudo degradation verified); Windows E/P classification still
-deferred. Verified: macOS run (table/JSON/verdict, honest n/a; 12 bench tests +
+(graceful no-sudo degradation verified); Windows E/P classification was deferred
+here and landed later in Phase 7. Verified: macOS run (table/JSON/verdict, honest n/a; 12 bench tests +
 integration test), Linux/Windows clippy clean cross-target.*
 
 #### Original outline
@@ -268,8 +268,8 @@ integration test), Linux/Windows clippy clean cross-target.*
 *Shipped: `crates/bgrt/examples/{background_task,mixed_runtimes,quiet_threads}.rs`
 (run + `clippy --all-targets` clean); README "Usage" + a real **Apple M1** results
 table (Background: 99.8% E-core, ~12× less power); CLAUDE.md architecture/commands
-refreshed for the full module set. Remaining (post-plan): Windows E/P
-classification, and CI to execute the Linux/Windows paths on real hardware.*
+refreshed for the full module set. Remaining at the time (both since addressed in
+Phase 7): Windows E/P classification, and CI to execute the Linux/Windows paths.*
 
 #### Original outline
 - `README.md` (install, the QoS table, usage, privilege notes); `CLAUDE.md`

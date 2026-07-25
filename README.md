@@ -261,14 +261,14 @@ never an error):
 | Signal | Linux | Windows | macOS |
 |---|---|---|---|
 | wall-clock, samples | ✅ | ✅ | ✅ |
-| core placement / %E | ✅ sysfs | cpu only (E/P deferred) | needs `powermetrics` |
+| core placement / %E | ✅ sysfs | ✅ `GetSystemCpuSetInformation` | needs `powermetrics` |
 | frequency | ✅ sysfs | ✅ `CallNtPowerInformation` | needs `powermetrics` |
 | energy | ✅ RAPL (often root) | — | `--mac-power` (needs `sudo`) |
 
-So on **Linux** you get the full picture unprivileged (energy may need root for
-RAPL); on **macOS** core/frequency/power need `sudo powermetrics` (use
-`--mac-power`); on **Windows** you get frequency + placement (E/P labelling is a
-TODO). The library itself never needs privileges — only this measurement tool does.
+So on **Linux** and **Windows** you get placement and frequency unprivileged
+(Linux energy may need root for RAPL; Windows has no energy counter at all); on
+**macOS** core/frequency/power need `sudo powermetrics` (use `--mac-power`). The
+library itself never needs privileges — only this measurement tool does.
 
 ## Limitations & notes
 
@@ -296,8 +296,15 @@ So on an Alder Lake / Raptor Lake / Meteor Lake box, `--pin` and
 and the selection logic is tested — but treat them as **untested code, not a
 measured feature**, until someone runs `cargo run --release -p bgrt-bench --
 --duration 3 --pin` on real P+E silicon. Reports welcome. macOS needs none of
-this (`QOS_CLASS_BACKGROUND` is E-core-confined by the kernel, and that path
-*is* measured), and Windows delegates placement to EcoQoS.
+this: `QOS_CLASS_BACKGROUND` is E-core-confined by the kernel, and that path *is*
+measured.
+
+The same caveat applies more narrowly to **Windows E/P telemetry**. The
+`GetSystemCpuSetInformation` read runs in CI on every push, so the API call and
+the homogeneous case are verified — but CI runners are homogeneous VMs, so the
+branch that actually labels a core "efficiency" has only ever been exercised by
+unit tests of the selection logic. Windows *placement* is unaffected either way:
+that is EcoQoS's job, not ours.
 
 - **Frequency isn't directly controllable** from userspace — `bgrt` *biases*
   against clocking up (chiefly by keeping work off performance cores); it can't
@@ -311,8 +318,9 @@ this (`QOS_CLASS_BACKGROUND` is E-core-confined by the kernel, and that path
   note above). Async `await` on a background runtime does not.
 - **Telemetry availability varies** (see the table above): Linux is fullest
   unprivileged; macOS frequency/power/residency need `sudo powermetrics`; Windows
-  reports frequency + CPU index but not yet E/P classification. Linux RAPL energy
-  is often root-only. The *library* never needs privileges — only measurement does.
+  reports frequency, CPU index, and E/P classification, but has no energy
+  counter. Linux RAPL energy is often root-only. The *library* never needs
+  privileges — only measurement does.
 
 ## Development
 

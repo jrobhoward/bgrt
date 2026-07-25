@@ -7,7 +7,7 @@
 //! | Signal          | Linux               | Windows                     | macOS                  |
 //! |-----------------|---------------------|-----------------------------|------------------------|
 //! | current CPU     | `sched_getcpu`      | `GetCurrentProcessorNumber` | — (no per-thread API)  |
-//! | E/P core type   | sysfs `cpu_capacity`| — (deferred)                | —                      |
+//! | E/P core type   | sysfs `cpu_capacity`| `GetSystemCpuSetInformation`| —                      |
 //! | frequency (MHz) | sysfs `cpufreq`     | `CallNtPowerInformation`    | — (needs `powermetrics`)|
 //! | energy (µJ)     | RAPL (if readable)  | —                           | — (needs `powermetrics`)|
 //!
