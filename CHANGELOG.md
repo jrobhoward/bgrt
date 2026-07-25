@@ -8,6 +8,67 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Road to 1.0 — API freeze decisions — 2026-07-25
+- **Errors now preserve their cause.** `Error::Backend` became a struct variant
+  `{ syscall: &'static str, source: std::io::Error }`; `Error::Runtime` carries
+  tokio's `io::Error` directly; `Error::ThreadPool` boxes its cause as
+  `Box<dyn Error + Send + Sync>` — deliberately *not* typed as
+  `rayon::ThreadPoolBuildError`, so rayon's version is not part of `bgrt`'s
+  public API and a rayon major release is not a breaking change here. Every
+  construction site already had the structured cause (`io::Error::last_os_error`,
+  `GetLastError`, pthread's returned errno) and was discarding it into a string.
+  - **New `Error::raw_os_error() -> Option<i32>`**, so callers can distinguish
+    "kernel lacks the feature" (`ENOSYS`) from a real failure without parsing
+    messages — the case that actually matters for the best-effort `uclamp` and
+    affinity paths. Display strings are now short and stable; the OS detail lives
+    in the source chain.
+- **`telemetry` is documented semver-exempt.** It exists to serve `bgrt-bench`;
+  its surface may change in any release, including a patch. The rest of the crate
+  carries the usual guarantees.
+- **`Runtime::shutdown_timeout` / `shutdown_background`.** Dropping a runtime
+  waits for blocking tasks indefinitely, which for a *background* runtime can be
+  a very long time — quiet work is slow by design. These bound that wait.
+- **No current-thread runtime — and it is now documented why.** Measured: a Tokio
+  current-thread runtime fires `on_thread_start` only for blocking-pool threads,
+  so async tasks run on the `block_on` caller's thread at its *unmodified* QoS
+  (probe: task observed `QOS_CLASS_DEFAULT` while the blocking thread observed
+  `QOS_CLASS_BACKGROUND`). Classifying the caller is not an option either: on
+  Linux niceness is a one-way trip for unprivileged threads. `worker_threads(1)`
+  is the single-quiet-worker configuration and costs exactly one thread (measured:
+  `+1`; Tokio drives I/O and timers on the worker, with no extra driver thread).
+- **Documented two standing decisions:** blocking-pool threads intentionally share
+  the runtime's `QosClass` (CPU-bound work is exactly what lands there), and
+  `QosClass::default()` is `Default` while the *builders* default to `Background`
+  — the enum's default is its neutral member, whereas constructing a `bgrt`
+  builder is already a request for quiet execution.
+- **Verified:** `cargo test --workspace`, `--all-features` (44 lib + 9 doctests),
+  `--no-default-features`, clippy `-Dwarnings` on host plus the Linux and Windows
+  cross-targets, MSRV 1.85.0 `cargo check --all-features`, and `cargo doc` with
+  `RUSTDOCFLAGS=-Dwarnings` — all clean.
+
+### CI, licensing, and packaging — 2026-07-25
+- **`.github/workflows/ci.yml`** — first CI for the project. `test` job matrixed
+  over macOS/Linux/Windows (clippy `-Dwarnings`, `cargo test --workspace`, four
+  feature permutations each), `msrv` job matrixed on 1.85.0, and a `lint` job
+  (`cargo fmt --check`, `cargo doc` with `RUSTDOCFLAGS=-Dwarnings`). This is what
+  finally *executes* the Windows and Linux backends, which until now were only
+  ever cross-compiled. Uses rustup plus first-party actions only; `bash` forced
+  on all three runners. Clippy's `-Dwarnings` is passed after `--` so it applies
+  to workspace members and not dependencies, keeping upstream warnings from
+  breaking the build.
+- **`LICENSE-MIT` + `LICENSE-APACHE`** added, matching the long-declared
+  `MIT OR Apache-2.0`. `cargo package --list` showed workspace-root licenses were
+  **not** included in the publishable tarball; both are symlinked into
+  `crates/bgrt/` and verified present with dereferenced content.
+- **Packaging:** `[package.metadata.docs.rs] all-features = true` (without it the
+  `rayon` and `telemetry` APIs would be absent from docs.rs entirely) and a
+  `readme` field.
+- **Windows test gap closed:** added a `Background` → `Default` transition test
+  covering the EcoQoS *clear* path (`set_eco_qos(false)`); the pre-existing tests
+  each start on a fresh thread and so only ever *set* it. EcoQoS state has no
+  documented read-back, so the throttling bit remains asserted indirectly through
+  thread priority.
+
 ### Opt-in Linux `uclamp` frequency clamp — 2026-06-13
 - **New `clamp_frequency(bool)` builder option** on `RuntimeBuilder`,
   `RayonBuilder`, and `ThreadBuilder` (opt-in, default off). On Linux it caps a

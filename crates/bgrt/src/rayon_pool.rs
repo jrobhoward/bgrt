@@ -135,7 +135,7 @@ impl RayonBuilder {
 
         let inner = builder
             .build()
-            .map_err(|e| Error::ThreadPool(e.to_string()))?;
+            .map_err(|e| Error::ThreadPool(Box::new(e)))?;
 
         Ok(RayonPool { inner, qos })
     }

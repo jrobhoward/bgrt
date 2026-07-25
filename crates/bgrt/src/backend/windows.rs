@@ -57,10 +57,11 @@ fn set_eco_qos(enabled: bool) -> Result<(), Error> {
     };
     if rc == 0 {
         // SAFETY: `GetLastError` has no preconditions.
-        Err(Error::Backend(format!(
-            "SetThreadInformation(ThreadPowerThrottling) failed: {}",
-            unsafe { GetLastError() }
-        )))
+        let code = unsafe { GetLastError() };
+        Err(Error::Backend {
+            syscall: "SetThreadInformation(ThreadPowerThrottling)",
+            source: std::io::Error::from_raw_os_error(code as i32),
+        })
     } else {
         Ok(())
     }
@@ -71,10 +72,11 @@ fn set_priority(priority: i32) -> Result<(), Error> {
     let rc = unsafe { SetThreadPriority(GetCurrentThread(), priority) };
     if rc == 0 {
         // SAFETY: `GetLastError` has no preconditions.
-        Err(Error::Backend(format!(
-            "SetThreadPriority failed: {}",
-            unsafe { GetLastError() }
-        )))
+        let code = unsafe { GetLastError() };
+        Err(Error::Backend {
+            syscall: "SetThreadPriority",
+            source: std::io::Error::from_raw_os_error(code as i32),
+        })
     } else {
         Ok(())
     }

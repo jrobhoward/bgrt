@@ -29,10 +29,10 @@ pub(super) fn apply(class: QosClass) -> Result<(), Error> {
     if rc == 0 {
         Ok(())
     } else {
-        let err = std::io::Error::last_os_error();
-        Err(Error::Backend(format!(
-            "setpriority(PRIO_PROCESS, 0, {nice}) failed: {err}"
-        )))
+        Err(Error::Backend {
+            syscall: "setpriority",
+            source: std::io::Error::last_os_error(),
+        })
     }
 }
 

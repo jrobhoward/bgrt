@@ -79,10 +79,10 @@ pub(crate) fn pin_current_thread(cpus: &[usize]) -> Result<(), Error> {
     if rc == 0 {
         Ok(())
     } else {
-        Err(Error::Backend(format!(
-            "sched_setaffinity failed: {}",
-            std::io::Error::last_os_error()
-        )))
+        Err(Error::Backend {
+            syscall: "sched_setaffinity",
+            source: std::io::Error::last_os_error(),
+        })
     }
 }
 

@@ -3,8 +3,23 @@
 //! Build one with [`RuntimeBuilder`]; every thread the runtime spawns (workers
 //! and the blocking pool) has the configured [`QosClass`] applied at start, so
 //! all work scheduled onto it runs at the chosen energy footprint.
+//!
+//! # Why there is no current-thread runtime
+//!
+//! The runtime is always multi-thread, even at one worker. A Tokio
+//! *current-thread* runtime drives its tasks on whichever thread calls
+//! `block_on` — the caller's thread, which `bgrt` does not own and must not
+//! reclassify: on Linux an unprivileged thread can lower its niceness but never
+//! raise it back, so classifying the caller would permanently deprioritize it.
+//! Its `on_thread_start` hook fires only for blocking-pool threads, so the async
+//! work would silently run *unclassified* — the exact opposite of the point.
+//!
+//! `worker_threads(1)` is therefore the single-quiet-worker configuration, and
+//! it costs exactly one thread (Tokio drives I/O and timers on the worker
+//! itself; there is no extra driver thread).
 
 use std::future::Future;
+use std::time::Duration;
 
 use tokio::runtime::{Handle, Runtime as TokioRuntime};
 use tokio::task::JoinHandle;
@@ -17,6 +32,14 @@ use crate::topology;
 ///
 /// Defaults: [`QosClass::Background`], one worker thread, efficiency-core pinning
 /// off, frequency clamp off.
+///
+/// Note that this default is **not** [`QosClass::default()`], which is
+/// [`QosClass::Default`] (the passthrough, "no energy hint" class). The two
+/// differ on purpose: `QosClass`'s own default is the neutral member of the
+/// enum, whereas reaching for a *`bgrt` runtime* is itself the request for quiet
+/// execution — a `RuntimeBuilder` that defaulted to passthrough would do nothing
+/// unless configured. Set [`qos`](RuntimeBuilder::qos) explicitly if you want a
+/// different class.
 ///
 /// # Examples
 ///
@@ -133,7 +156,7 @@ impl RuntimeBuilder {
             })
             .enable_all()
             .build()
-            .map_err(|e| Error::Runtime(e.to_string()))?;
+            .map_err(Error::Runtime)?;
 
         Ok(Runtime { inner, qos })
     }
@@ -160,7 +183,14 @@ impl Runtime {
         self.inner.spawn(future)
     }
 
-    /// Run a blocking closure on the runtime's (classified) blocking pool.
+    /// Run a blocking closure on the runtime's blocking pool.
+    ///
+    /// Blocking-pool threads carry the **same** [`QosClass`] as the async
+    /// workers: `on_thread_start` fires for both, and that is deliberate — a
+    /// background runtime whose `spawn_blocking` work ran at default priority
+    /// would defeat the point, since CPU-bound work is exactly what tends to go
+    /// there. There is no separate class for the blocking pool; if you need
+    /// blocking work at a different energy class, build a second runtime.
     pub fn spawn_blocking<F, R>(&self, f: F) -> JoinHandle<R>
     where
         F: FnOnce() -> R + Send + 'static,
@@ -185,6 +215,25 @@ impl Runtime {
     /// The energy [`QosClass`] applied to this runtime's threads.
     pub fn qos(&self) -> QosClass {
         self.qos
+    }
+
+    /// Shut down the runtime, waiting at most `timeout` for blocking tasks to
+    /// finish.
+    ///
+    /// Dropping a [`Runtime`] waits for blocking tasks *indefinitely*, which for
+    /// a background runtime can be a long time — quiet work is slow by design.
+    /// Use this to bound that wait. Tasks still running when the timeout expires
+    /// are leaked, not cancelled.
+    pub fn shutdown_timeout(self, timeout: Duration) {
+        self.inner.shutdown_timeout(timeout);
+    }
+
+    /// Shut down the runtime without waiting for blocking tasks at all.
+    ///
+    /// Returns immediately; in-flight blocking work is leaked. The same caveat
+    /// as [`shutdown_timeout`](Runtime::shutdown_timeout) applies, more so.
+    pub fn shutdown_background(self) {
+        self.inner.shutdown_background();
     }
 }
 

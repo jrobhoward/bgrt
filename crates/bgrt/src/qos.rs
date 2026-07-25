@@ -18,6 +18,14 @@
 ///
 /// Every `Background` mapping is weighted-fair (not run-only-when-idle), so quiet
 /// work still makes forward progress under contention rather than starving.
+///
+/// # Default
+///
+/// `QosClass::default()` is [`QosClass::Default`] — the neutral, no-hint class,
+/// matching the name. The *builders* deliberately differ: `RuntimeBuilder`,
+/// `RayonBuilder`, and `ThreadBuilder` all default to [`QosClass::Background`],
+/// because constructing one is already a request for quiet execution. Don't read
+/// `QosClass::default()` as "what `bgrt` does by default".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum QosClass {
     /// Lowest energy: prefer efficiency cores and low clock frequency, while

@@ -35,9 +35,12 @@ pub(super) fn apply(class: QosClass) -> Result<(), Error> {
     if rc == 0 {
         Ok(())
     } else {
-        Err(Error::Backend(format!(
-            "pthread_set_qos_class_self_np returned {rc}"
-        )))
+        // pthread functions return the error code directly rather than setting
+        // errno, so build the `io::Error` from `rc` instead of `last_os_error`.
+        Err(Error::Backend {
+            syscall: "pthread_set_qos_class_self_np",
+            source: std::io::Error::from_raw_os_error(rc),
+        })
     }
 }
 

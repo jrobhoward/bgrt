@@ -26,6 +26,33 @@ fn builder____defaults____are_background_class() {
 }
 
 #[test]
+fn runtime____shutdown_timeout____returns_without_waiting_for_blocking_work() {
+    let rt = RuntimeBuilder::new().build().unwrap();
+    // A blocking task that outlives the timeout: shutdown must not wait for it.
+    rt.spawn_blocking(|| std::thread::sleep(std::time::Duration::from_secs(30)));
+    let started = std::time::Instant::now();
+    rt.shutdown_timeout(std::time::Duration::from_millis(50));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "shutdown_timeout waited {:?}, far past its 50ms bound",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn runtime____shutdown_background____returns_immediately() {
+    let rt = RuntimeBuilder::new().build().unwrap();
+    rt.spawn_blocking(|| std::thread::sleep(std::time::Duration::from_secs(30)));
+    let started = std::time::Instant::now();
+    rt.shutdown_background();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "shutdown_background waited {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
 fn builder____zero_workers____clamps_instead_of_panicking() {
     // tokio panics on worker_threads(0); the builder must clamp it.
     let rt = RuntimeBuilder::new().worker_threads(0).build().unwrap();

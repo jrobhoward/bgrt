@@ -105,9 +105,10 @@ pub(crate) fn clamp_current_thread(class: QosClass) -> Result<(), Error> {
             tracing::debug!(%err, "uclamp unsupported; skipping frequency clamp");
             Ok(())
         }
-        _ => Err(Error::Backend(format!(
-            "sched_setattr(uclamp) failed: {err}"
-        ))),
+        _ => Err(Error::Backend {
+            syscall: "sched_setattr(uclamp)",
+            source: err,
+        }),
     }
 }
 

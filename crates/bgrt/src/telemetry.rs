@@ -13,6 +13,15 @@
 //!
 //! macOS per-thread core / frequency / energy require `powermetrics` (root); that
 //! privileged path is left to the harness (Phase 5).
+//!
+//! # Stability
+//!
+//! **This module is exempt from `bgrt`'s semver guarantees.** It exists to serve
+//! the `bgrt-bench` comparison harness, and its surface may change or be removed
+//! in any release — including a patch release — without a major version bump.
+//! The rest of the crate (`QosClass`, `apply`, the builders, `Error`) carries the
+//! usual guarantees; this module does not. Depend on it only if you can absorb
+//! that, and pin an exact version if you do.
 
 use std::collections::BTreeSet;
 
