@@ -157,6 +157,7 @@ Dev: `rstest`, `tempfile`. Release profile: `strip`, `lto`, `codegen-units = 1`.
 | 4 | Telemetry (core / frequency / power)        | ✅ Done (primitives; Sampler orchestration + macOS powermetrics → Phase 5) |
 | 5 | Comparison harness (`bgrt-bench`)           | ✅ Done (table/JSON + verdict + integration test; macOS run, Linux/Windows cross-check) |
 | 6 | Docs, examples, polish                      | ✅ Done (examples run/lint clean; README incl. M1 results; CLAUDE.md refreshed) |
+| 7 | Road to 1.0 (CI, licensing, API freeze)     | 🔶 In progress — CI matrix, licenses/packaging, error causes, shutdown control, and `current_thread` done; **remaining: hybrid-Linux verification (blocked on P+E hardware, now documented as unmeasured) and Windows E/P telemetry classification** |
 
 Legend: ⬜ not started · 🔶 in progress · ✅ done. Update this table **and**
 `CHANGELOG.md` as each phase lands.
@@ -284,6 +285,16 @@ classification, and CI to execute the Linux/Windows paths on real hardware.*
 - ~~**tokio `on_thread_start` & the blocking pool**~~ — ✅ Resolved (Phase 2): the
   hook fires for blocking-pool threads too; a macOS test confirms `spawn_blocking`
   work carries the runtime's QoS. No `spawn_blocking`-side workaround needed.
+  *Amended (Phase 7):* true for the **multi-thread** scheduler only. On a
+  current-thread runtime the hook fires *only* for the blocking pool, never for
+  the thread driving async tasks — which is why `current_thread(true)` runs the
+  scheduler on a `bgrt`-owned, classified thread. See `docs/DESIGN.md`.
+- ~~**No current-thread runtime**~~ — ✅ Resolved (Phase 7) as
+  `RuntimeBuilder::current_thread(bool)`, with `bgrt` owning the driver thread.
+- **Hybrid-Linux E-core pinning is unverified** — the selection logic is
+  unit-tested, but the sysfs read and `sched_setaffinity` have never run against
+  a non-empty core set (no P+E hardware available). Documented as a caveat in the
+  README rather than implied to be measured. Needs Alder/Raptor/Meteor Lake.
 - **macOS core placement** has no per-thread API → depends on `powermetrics`
   (root) for the harness; the *library* needs no privilege. (Phase 4.)
 - **RAPL access on Linux** is frequently restricted post-CVE; the harness must

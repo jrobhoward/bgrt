@@ -87,7 +87,8 @@ A `bgrt` library crate plus a `bgrt-bench` measurement binary.
   (`SetThreadInformation` EcoQoS + `SetThreadPriority`), with a no-op fallback.
 - `runtime` (feature `tokio`, default on) — `RuntimeBuilder` → `Runtime`, wrapping
   a multi-thread tokio runtime whose `on_thread_start` applies the class to **every**
-  runtime thread (workers + blocking pool).
+  runtime thread (workers + blocking pool). `current_thread(true)` selects tokio's
+  current-thread scheduler instead — see below.
 - `rayon_pool` (feature `rayon`, opt-in) — `RayonBuilder` → `RayonPool`, wrapping
   `rayon::ThreadPool` with a `start_handler` applying QoS to every rayon thread.
   `RayonPool` derefs to `rayon::ThreadPool`; `pool.install(|| …)` routes all
@@ -105,6 +106,40 @@ spawn onto**, not a mutable per-task flag: keep a `Default`-class `Runtime` and 
 This is the idiomatic shape and it sidesteps Linux's one-way `nice` (a thread
 can't raise its own priority back unprivileged) by classifying each worker once
 at creation.
+
+### The current-thread runtime owns its driver thread
+
+`RuntimeBuilder::current_thread(true)` gives single-threaded task semantics, but
+**not** by driving tasks on the caller's thread the way tokio's current-thread
+runtime does. `bgrt` spawns one OS thread (via `ThreadBuilder`, so it is
+classified like every other `bgrt` thread), builds the current-thread runtime
+*there*, and parks it in `Runtime::block_on` for the runtime's lifetime.
+
+The indirection exists because the obvious implementation is unsound for this
+crate, in two independent ways:
+
+1. **The hook doesn't fire for the driver.** On a current-thread runtime,
+   `on_thread_start` fires only for blocking-pool threads. Measured: the async
+   task observed `QOS_CLASS_DEFAULT` while a `spawn_blocking` closure on the same
+   runtime observed `QOS_CLASS_BACKGROUND`. The async work — the part users care
+   about — would run entirely unclassified.
+2. **Classifying the caller instead is not an option.** It is a thread `bgrt`
+   does not own, and on Linux an unprivileged thread can lower its niceness but
+   never raise it back, so `bgrt` would permanently deprioritize somebody else's
+   thread. This is the same one-way-`nice` constraint that motivates the
+   two-runtime pattern above.
+
+Owning the thread resolves both. The costs are a shutdown path that must cross a
+thread boundary (a `oneshot` carrying the desired teardown mode, so all three
+tokio shutdown behaviours survive) and a `block_on` that goes through
+`Handle::block_on` — sound only because the driver thread keeps the I/O and timer
+drivers running, which a bare `Handle::block_on` on a current-thread runtime
+cannot do for itself.
+
+**It is not the default, and mostly should not be used.** `worker_threads(1)`
+costs the same single thread (measured: both modes are `+1`) without the hazard
+that one blocking task stalls every other task. Reach for `current_thread` only
+when single-threaded task semantics are actually wanted.
 
 ### Efficiency-core affinity (opt-in, Linux)
 
@@ -181,5 +216,16 @@ frequency/power/residency, and Linux RAPL energy (often root since CVE-2020-8694
   to measure the executor, not the join.)
 - **tokio's `on_thread_start` covers the blocking pool**, so `spawn_blocking`
   work is classified too — verified by test. No `spawn_blocking`-side workaround.
+  **But only on the multi-thread scheduler:** on a current-thread runtime the
+  same hook fires *only* for blocking-pool threads, never for the thread driving
+  the async tasks. Hence the owned driver thread described above.
+- **Efficiency-core pinning on Linux is unverified on real hardware.** The
+  selection logic (`topology::select_efficiency_cores`) is unit-tested against
+  hybrid and three-tier capacity layouts, but the sysfs `cpu_capacity` read and
+  `sched_setaffinity` have never executed against a non-empty core set — every
+  available Linux machine is homogeneous, where the feature correctly does
+  nothing, which is precisely the result that cannot distinguish working code
+  from silently broken code. Recorded as a caveat in the README rather than
+  papered over; treat it as untested code until run on Alder/Raptor/Meteor Lake.
 - **Frequency can be biased, not guaranteed.** Keeping work off P-cores is the
   effective lever; E-cores can still clock up, but at far lower thermal cost.

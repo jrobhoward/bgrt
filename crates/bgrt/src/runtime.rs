@@ -4,28 +4,37 @@
 //! and the blocking pool) has the configured [`QosClass`] applied at start, so
 //! all work scheduled onto it runs at the chosen energy footprint.
 //!
-//! # Why there is no current-thread runtime
+//! # Multi-thread vs. current-thread
 //!
-//! The runtime is always multi-thread, even at one worker. A Tokio
-//! *current-thread* runtime drives its tasks on whichever thread calls
-//! `block_on` — the caller's thread, which `bgrt` does not own and must not
-//! reclassify: on Linux an unprivileged thread can lower its niceness but never
-//! raise it back, so classifying the caller would permanently deprioritize it.
-//! Its `on_thread_start` hook fires only for blocking-pool threads, so the async
-//! work would silently run *unclassified* — the exact opposite of the point.
+//! By default the runtime uses Tokio's multi-thread scheduler with one worker.
+//! That already costs exactly one thread — Tokio drives I/O and timers on the
+//! worker itself, with no extra driver thread — so it is the ordinary
+//! single-quiet-worker configuration.
 //!
-//! `worker_threads(1)` is therefore the single-quiet-worker configuration, and
-//! it costs exactly one thread (Tokio drives I/O and timers on the worker
-//! itself; there is no extra driver thread).
+//! [`RuntimeBuilder::current_thread`] switches to Tokio's *current-thread*
+//! scheduler, which `bgrt` runs on **one OS thread that it spawns and
+//! classifies itself** — never on the caller's thread. That distinction is the
+//! whole design. A plain Tokio current-thread runtime drives its tasks on
+//! whichever thread calls `block_on`, and `bgrt` must not reclassify that
+//! thread: it does not own it, and on Linux an unprivileged thread can lower
+//! its niceness but never raise it back, so classifying the caller would
+//! permanently deprioritize a thread that belongs to someone else. Worse, the
+//! `on_thread_start` hook fires only for blocking-pool threads on a
+//! current-thread runtime, so the async work would silently run *unclassified*
+//! — the exact opposite of the point. Owning the driver thread is what makes
+//! the energy guarantee hold in that mode.
 
 use std::future::Future;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use tokio::runtime::{Handle, Runtime as TokioRuntime};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::error::Error;
 use crate::qos::QosClass;
+use crate::thread::{ThreadBuilder, classify};
 use crate::topology;
 
 /// Builder for an energy-classified [`Runtime`].
@@ -61,6 +70,7 @@ pub struct RuntimeBuilder {
     thread_name: String,
     pin_efficiency_cores: bool,
     clamp_frequency: bool,
+    current_thread: bool,
 }
 
 impl Default for RuntimeBuilder {
@@ -71,6 +81,7 @@ impl Default for RuntimeBuilder {
             thread_name: "bgrt-worker".to_owned(),
             pin_efficiency_cores: false,
             clamp_frequency: false,
+            current_thread: false,
         }
     }
 }
@@ -88,8 +99,50 @@ impl RuntimeBuilder {
     }
 
     /// Set the number of worker threads. Values below 1 are treated as 1.
+    /// Ignored when [`current_thread`](RuntimeBuilder::current_thread) is set.
     pub fn worker_threads(mut self, n: usize) -> Self {
         self.worker_threads = n;
+        self
+    }
+
+    /// Use Tokio's current-thread scheduler, driven on a single OS thread that
+    /// `bgrt` spawns and classifies. Off by default (multi-thread scheduler).
+    ///
+    /// **Despite the name — which follows Tokio's scheduler naming — tasks do
+    /// not run on the calling thread.** `bgrt` owns the driver thread, because
+    /// that is the only way the energy class can be guaranteed: a plain Tokio
+    /// current-thread runtime would drive tasks on the caller's thread, and
+    /// `bgrt` must never reclassify a thread it did not create (on Linux an
+    /// unprivileged thread can lower its niceness but not raise it back). The
+    /// observable differences from the default multi-thread mode are:
+    ///
+    /// - Every task runs on that one thread, so `spawn`ed futures need not be
+    ///   `Send` between workers — but a task that blocks stalls all the others.
+    /// - [`worker_threads`](RuntimeBuilder::worker_threads) is ignored.
+    /// - [`block_on`](Runtime::block_on) goes through the runtime handle; the
+    ///   future is still polled on the *calling* thread, while spawned tasks and
+    ///   the I/O and timer drivers run on the owned thread.
+    /// - The thread exists for the runtime's whole lifetime and is joined when
+    ///   the [`Runtime`] is dropped or shut down.
+    ///
+    /// Prefer the default (`worker_threads(1)`) unless you specifically want
+    /// single-threaded task semantics: it costs the same one thread.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bgrt::{QosClass, RuntimeBuilder};
+    ///
+    /// let rt = RuntimeBuilder::new()
+    ///     .qos(QosClass::Background)
+    ///     .current_thread(true)
+    ///     .build()?;
+    /// let answer = rt.block_on(rt.spawn(async { 21 * 2 }))?;
+    /// assert_eq!(answer, 42);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn current_thread(mut self, current_thread: bool) -> Self {
+        self.current_thread = current_thread;
         self
     }
 
@@ -122,43 +175,180 @@ impl RuntimeBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Runtime`] if the underlying Tokio runtime cannot be built.
+    /// Returns [`Error::Runtime`] if the underlying Tokio runtime cannot be
+    /// built, or — in [`current_thread`](RuntimeBuilder::current_thread) mode —
+    /// if the OS refuses to create the driver thread.
     pub fn build(self) -> Result<Runtime, Error> {
+        if self.current_thread {
+            self.build_current_thread()
+        } else {
+            self.build_multi_thread()
+        }
+    }
+
+    /// The E-cores to pin to, looked up once on the spawning thread.
+    fn efficiency_cores(&self) -> Vec<usize> {
+        if self.pin_efficiency_cores {
+            topology::efficiency_cores()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn build_multi_thread(self) -> Result<Runtime, Error> {
         let qos = self.qos;
         let clamp_frequency = self.clamp_frequency;
         // tokio panics on a worker count of 0; clamp to keep `build` total.
         let workers = self.worker_threads.max(1);
-        let efficiency_cores = if self.pin_efficiency_cores {
-            topology::efficiency_cores()
-        } else {
-            Vec::new()
-        };
+        let efficiency_cores = self.efficiency_cores();
 
         let inner = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(workers)
             .thread_name(self.thread_name)
-            .on_thread_start(move || {
-                // Runs on every runtime thread (workers and the blocking pool).
-                // QoS/affinity/clamp are best-effort optimizations: warn, don't abort.
-                if let Err(e) = crate::apply(qos) {
-                    tracing::warn!(error = %e, "bgrt: failed to apply qos to runtime thread");
-                }
-                if !efficiency_cores.is_empty() {
-                    if let Err(e) = topology::pin_current_thread(&efficiency_cores) {
-                        tracing::warn!(error = %e, "bgrt: failed to pin thread to efficiency cores");
-                    }
-                }
-                if clamp_frequency {
-                    if let Err(e) = crate::backend::clamp_current_thread(qos) {
-                        tracing::warn!(error = %e, "bgrt: failed to clamp thread frequency");
-                    }
-                }
-            })
+            // Fires on every runtime thread here: workers and the blocking pool.
+            .on_thread_start(move || classify(qos, &efficiency_cores, clamp_frequency))
             .enable_all()
             .build()
             .map_err(Error::Runtime)?;
 
-        Ok(Runtime { inner, qos })
+        let handle = inner.handle().clone();
+        Ok(Runtime {
+            inner: Inner::MultiThread(inner),
+            handle,
+            qos,
+        })
+    }
+
+    fn build_current_thread(self) -> Result<Runtime, Error> {
+        let qos = self.qos;
+        let clamp_frequency = self.clamp_frequency;
+        let efficiency_cores = self.efficiency_cores();
+
+        // The driver thread reports its handle — or the build error — back here,
+        // so `build` stays fallible instead of handing out a dead runtime.
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<Handle, std::io::Error>>(1);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<ShutdownMode>();
+
+        // Spawning through `ThreadBuilder` is what classifies the driver thread,
+        // and it resolves qos/pin/clamp exactly as every other bgrt thread does.
+        let join = ThreadBuilder::new()
+            .qos(qos)
+            .name(self.thread_name)
+            .pin_efficiency_cores(self.pin_efficiency_cores)
+            .clamp_frequency(clamp_frequency)
+            .spawn(move || {
+                drive(
+                    qos,
+                    efficiency_cores,
+                    clamp_frequency,
+                    ready_tx,
+                    shutdown_rx,
+                );
+            })
+            .map_err(Error::Runtime)?;
+
+        let handle = match ready_rx.recv() {
+            Ok(Ok(handle)) => handle,
+            Ok(Err(e)) => return Err(Error::Runtime(e)),
+            // The sender was dropped without a message: the driver thread died
+            // before it could report, which means it panicked.
+            Err(_) => {
+                return Err(Error::Runtime(std::io::Error::other(
+                    "bgrt: runtime driver thread exited before reporting readiness",
+                )));
+            }
+        };
+
+        Ok(Runtime {
+            inner: Inner::Dedicated(Dedicated {
+                shutdown: Some(shutdown_tx),
+                join: Some(join),
+            }),
+            handle,
+            qos,
+        })
+    }
+}
+
+/// How a dedicated driver thread should tear its runtime down. Mirrors the
+/// three Tokio shutdown behaviours, sent across the thread boundary because the
+/// runtime is owned by the driver, not by the [`Runtime`] handle.
+#[derive(Debug)]
+enum ShutdownMode {
+    /// Drop the runtime, waiting for blocking tasks (plain `drop` semantics).
+    Wait,
+    /// Wait at most this long for blocking tasks.
+    Timeout(Duration),
+    /// Don't wait at all.
+    Background,
+}
+
+/// Body of the dedicated driver thread: build a current-thread runtime, publish
+/// its handle, then drive it until a shutdown mode arrives.
+///
+/// This thread has already been classified by [`ThreadBuilder`]; the
+/// `on_thread_start` hook installed here covers the blocking pool, which is the
+/// only thing it fires for on a current-thread runtime.
+fn drive(
+    qos: QosClass,
+    efficiency_cores: Vec<usize>,
+    clamp_frequency: bool,
+    ready: mpsc::SyncSender<Result<Handle, std::io::Error>>,
+    shutdown: oneshot::Receiver<ShutdownMode>,
+) {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .on_thread_start(move || classify(qos, &efficiency_cores, clamp_frequency))
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            let _ = ready.send(Err(e));
+            return;
+        }
+    };
+
+    if ready.send(Ok(rt.handle().clone())).is_err() {
+        return; // The builder gave up before we were ready; nothing to drive.
+    }
+
+    // Parking here is what drives spawned tasks and the I/O and timer drivers
+    // for the runtime's whole lifetime. A dropped sender means the `Runtime` was
+    // leaked rather than shut down; treat that as the ordinary drop path.
+    let mode = rt.block_on(async move { shutdown.await.unwrap_or(ShutdownMode::Wait) });
+    match mode {
+        ShutdownMode::Wait => drop(rt),
+        ShutdownMode::Timeout(timeout) => rt.shutdown_timeout(timeout),
+        ShutdownMode::Background => rt.shutdown_background(),
+    }
+}
+
+/// Handle onto a dedicated driver thread and its shutdown channel.
+#[derive(Debug)]
+struct Dedicated {
+    shutdown: Option<oneshot::Sender<ShutdownMode>>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Dedicated {
+    /// Tell the driver thread how to tear down and hand back its join handle, so
+    /// the caller decides whether to wait. Idempotent: a second call is a no-op,
+    /// which is what makes the explicit `shutdown_*` methods safe to combine
+    /// with [`Drop`].
+    fn stop(&mut self, mode: ShutdownMode) -> Option<std::thread::JoinHandle<()>> {
+        if let Some(tx) = self.shutdown.take() {
+            // An error means the driver thread is already gone — fine either way.
+            let _ = tx.send(mode);
+        }
+        self.join.take()
+    }
+}
+
+impl Drop for Dedicated {
+    fn drop(&mut self) {
+        if let Some(join) = self.stop(ShutdownMode::Wait) {
+            let _ = join.join();
+        }
     }
 }
 
@@ -169,8 +359,20 @@ impl RuntimeBuilder {
 /// runtime in the same process for latency-sensitive work.
 #[derive(Debug)]
 pub struct Runtime {
-    inner: TokioRuntime,
+    inner: Inner,
+    /// Cloned up front so `handle()` works the same in both modes — in
+    /// current-thread mode the runtime itself lives on the driver thread.
+    handle: Handle,
     qos: QosClass,
+}
+
+/// Where the wrapped Tokio runtime actually lives.
+#[derive(Debug)]
+enum Inner {
+    /// Owned here; its worker threads classify themselves on start.
+    MultiThread(TokioRuntime),
+    /// Owned by a `bgrt`-spawned, classified driver thread.
+    Dedicated(Dedicated),
 }
 
 impl Runtime {
@@ -180,7 +382,7 @@ impl Runtime {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        self.inner.spawn(future)
+        self.handle.spawn(future)
     }
 
     /// Run a blocking closure on the runtime's blocking pool.
@@ -196,7 +398,7 @@ impl Runtime {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        self.inner.spawn_blocking(f)
+        self.handle.spawn_blocking(f)
     }
 
     /// Run a future to completion, driving the runtime.
@@ -204,12 +406,18 @@ impl Runtime {
     /// Note: the future runs on the **calling** thread, which is not classified;
     /// use [`spawn`](Runtime::spawn) for work that should run at this runtime's QoS.
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
-        self.inner.block_on(future)
+        match &self.inner {
+            Inner::MultiThread(rt) => rt.block_on(future),
+            // The driver thread owns the runtime, so go through the handle. That
+            // is only sound because the driver keeps the I/O and timer drivers
+            // running for the runtime's whole lifetime.
+            Inner::Dedicated(_) => self.handle.block_on(future),
+        }
     }
 
     /// A handle to the underlying Tokio runtime, for APIs that expect one.
     pub fn handle(&self) -> &Handle {
-        self.inner.handle()
+        &self.handle
     }
 
     /// The energy [`QosClass`] applied to this runtime's threads.
@@ -225,7 +433,16 @@ impl Runtime {
     /// Use this to bound that wait. Tasks still running when the timeout expires
     /// are leaked, not cancelled.
     pub fn shutdown_timeout(self, timeout: Duration) {
-        self.inner.shutdown_timeout(timeout);
+        match self.inner {
+            Inner::MultiThread(rt) => rt.shutdown_timeout(timeout),
+            Inner::Dedicated(mut dedicated) => {
+                // The driver thread applies the timeout to the runtime it owns,
+                // so joining it here still returns within roughly `timeout`.
+                if let Some(join) = dedicated.stop(ShutdownMode::Timeout(timeout)) {
+                    let _ = join.join();
+                }
+            }
+        }
     }
 
     /// Shut down the runtime without waiting for blocking tasks at all.
@@ -233,7 +450,13 @@ impl Runtime {
     /// Returns immediately; in-flight blocking work is leaked. The same caveat
     /// as [`shutdown_timeout`](Runtime::shutdown_timeout) applies, more so.
     pub fn shutdown_background(self) {
-        self.inner.shutdown_background();
+        match self.inner {
+            Inner::MultiThread(rt) => rt.shutdown_background(),
+            // Signal and detach: joining would reintroduce the wait.
+            Inner::Dedicated(mut dedicated) => {
+                let _ = dedicated.stop(ShutdownMode::Background);
+            }
+        }
     }
 }
 

@@ -15,12 +15,16 @@ it onto a quiet executor.
   for the non-async path.
 - **Never starves** — quiet work uses weighted-fair low priority, so it always
   crawls forward under load (not run-only-when-idle).
-- **Cross-platform** — macOS, Windows, Linux, including big.LITTLE / P+E CPUs.
+- **Cross-platform** — macOS, Windows, Linux, including big.LITTLE / P+E CPUs
+  (though the hybrid-Linux path is
+  [unverified on real P+E hardware](#hybrid-linux-is-implemented-but-unmeasured)).
 
 > **Status:** the library (QoS backends, runtime wrapper, quiet-thread spawner,
 > rayon pool) and the measurement harness are implemented and tested. macOS (M1)
-> and Linux (Threadripper, AMD x86) are run-verified; Windows is cross-compiled
-> and lint-clean pending a run on real hardware. Design:
+> and Linux (Threadripper, AMD x86 — both *homogeneous*) are run-verified;
+> Windows runs in CI. Efficiency-core pinning on hybrid Linux is
+> [implemented but unmeasured](#hybrid-linux-is-implemented-but-unmeasured).
+> Design:
 > [`docs/DESIGN.md`](docs/DESIGN.md); plan: [`docs/ROADMAP.md`](docs/ROADMAP.md);
 > state: [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -35,6 +39,10 @@ let rt = bgrt::RuntimeBuilder::new()
     .worker_threads(1)
     .build()?;
 rt.spawn(async { /* quiet async work */ });
+
+// Single-threaded task semantics: tokio's current-thread scheduler, driven on
+// one OS thread that bgrt spawns and classifies (never the caller's thread).
+let rt = bgrt::RuntimeBuilder::new().current_thread(true).build()?;
 
 // A quiet rayon thread pool (feature "rayon", opt-in).
 let pool = bgrt::RayonBuilder::new()
@@ -117,7 +125,9 @@ cargo run --release -p bgrt-bench -- --duration 3
 cargo build --release -p bgrt-bench
 sudo ./target/release/bgrt-bench --duration 3 --mac-power
 
-# Linux, hybrid CPU (P+E, e.g. Alder/Raptor/Meteor Lake) — pin to E-cores:
+# Linux, hybrid CPU (P+E, e.g. Alder/Raptor/Meteor Lake) — pin to E-cores.
+# Unverified on real P+E hardware; see "Hybrid Linux is implemented but
+# unmeasured" below. If you have such a machine, this is the run to send us.
 cargo run --release -p bgrt-bench -- --duration 3 --pin
 
 # Linux, homogeneous CPU (no E-cores) — uclamp is the only frequency lever;
@@ -261,6 +271,33 @@ RAPL); on **macOS** core/frequency/power need `sudo powermetrics` (use
 TODO). The library itself never needs privileges — only this measurement tool does.
 
 ## Limitations & notes
+
+### Hybrid Linux is implemented but unmeasured
+
+**`pin_efficiency_cores` has never been run on a heterogeneous (P+E) Linux
+machine.** Every Linux measurement in this README is from a homogeneous CPU — an
+AMD Threadripper and an Intel Sandy Bridge i7 — neither of which has efficiency
+cores or exposes the `cpu_capacity` sysfs entries the detection relies on. On
+those machines the feature correctly does nothing, which is exactly the result
+that cannot distinguish "works" from "silently broken".
+
+Concretely, what is and isn't verified on Linux:
+
+| Piece | Status |
+|---|---|
+| `nice` mapping per QoS class | ✅ run-verified (tests assert `nice 19`) |
+| `uclamp` frequency cap | ✅ run-verified, two machines (tables above) |
+| `topology::select_efficiency_cores` (the selection logic) | ✅ unit-tested, incl. hybrid and three-tier layouts |
+| Reading `cpu_capacity` from sysfs on a real hybrid CPU | ❌ never executed — no such hardware available |
+| `sched_setaffinity` pinning to detected E-cores | ❌ never executed against a non-empty core set |
+
+So on an Alder Lake / Raptor Lake / Meteor Lake box, `--pin` and
+`pin_efficiency_cores(true)` should work — the syscall path is straightforward
+and the selection logic is tested — but treat them as **untested code, not a
+measured feature**, until someone runs `cargo run --release -p bgrt-bench --
+--duration 3 --pin` on real P+E silicon. Reports welcome. macOS needs none of
+this (`QOS_CLASS_BACKGROUND` is E-core-confined by the kernel, and that path
+*is* measured), and Windows delegates placement to EcoQoS.
 
 - **Frequency isn't directly controllable** from userspace — `bgrt` *biases*
   against clocking up (chiefly by keeping work off performance cores); it can't

@@ -39,7 +39,9 @@ telemetry = []
 [dependencies]
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true, optional = true }
+# `sync` is for the oneshot channel that signals shutdown to the dedicated
+# driver thread behind `RuntimeBuilder::current_thread`.
+tokio = { workspace = true, optional = true, features = ["sync"] }
 rayon = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]

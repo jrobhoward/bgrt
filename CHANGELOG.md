@@ -8,6 +8,49 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Current-thread runtime, on a thread bgrt owns — 2026-07-25
+- **`RuntimeBuilder::current_thread(bool)`** — supersedes the "no current-thread
+  runtime" decision recorded below. The objection there was never to the
+  *scheduler*; it was to who drives it. So `bgrt` now spawns the driver: one OS
+  thread, created through `ThreadBuilder` and therefore classified exactly like
+  every other `bgrt` thread, which builds a Tokio current-thread runtime and
+  parks in `Runtime::block_on` for the runtime's lifetime. Tasks get
+  single-threaded semantics *and* the energy class actually applies.
+  - **Naming caveat, documented prominently:** despite following Tokio's
+    scheduler naming, tasks do **not** run on the calling thread. That is the
+    entire point — reclassifying a thread `bgrt` did not create is unsafe (on
+    Linux niceness is a one-way trip for unprivileged threads).
+  - `Runtime` gained a private `Inner` enum (`MultiThread` | `Dedicated`) and now
+    caches a `Handle`, since in the new mode the runtime itself lives on the
+    driver thread. `spawn`/`spawn_blocking` go through the handle in both modes;
+    `block_on` dispatches, using `Handle::block_on` for the dedicated case —
+    sound only because the driver keeps the I/O and timer drivers running.
+  - **Shutdown crosses the thread boundary** via a `tokio::sync::oneshot`
+    carrying a `ShutdownMode` (`Wait` | `Timeout` | `Background`), so all three
+    Tokio teardown behaviours survive the indirection. `Drop` sends `Wait` and
+    joins. Adds tokio's `sync` feature to `bgrt` only.
+  - **Build stays fallible:** the driver reports its `Handle` — or the runtime
+    build error — back over an `mpsc::sync_channel`, so `build()` never returns a
+    dead runtime.
+  - **Measured, not assumed:** both modes cost exactly one thread
+    (`multi_thread(1)=+1`, `current_thread=+1`), and the process returns to its
+    baseline thread count after drop — the driver is joined, not leaked. On macOS
+    a task spawned onto the current-thread runtime observes
+    `QOS_CLASS_BACKGROUND`, the case a plain Tokio current-thread runtime gets
+    wrong; that assertion is now a test, with the `nice 19` equivalent on Linux.
+  - Prefer the default `worker_threads(1)` unless single-threaded task semantics
+    are wanted: same one thread, no blocked-task-stalls-everything hazard.
+- **`thread::classify` is now `pub(crate)`** and used by the runtime's
+  `on_thread_start` hooks, so all three builders resolve qos/pin/clamp through
+  one function instead of three copies.
+- **README: hybrid Linux is called out as unmeasured.** A table now separates
+  what is run-verified on Linux (`nice` mapping, `uclamp`, the pure E-core
+  *selection* logic) from what has never executed on real P+E silicon (the sysfs
+  `cpu_capacity` read, `sched_setaffinity` against a non-empty core set). Every
+  Linux measurement in the README is from a homogeneous CPU, where the feature
+  correctly does nothing — the one result that cannot distinguish "works" from
+  "silently broken". Flagged as untested code, not a measured feature.
+
 ### Road to 1.0 — API freeze decisions — 2026-07-25
 - **Errors now preserve their cause.** `Error::Backend` became a struct variant
   `{ syscall: &'static str, source: std::io::Error }`; `Error::Runtime` carries
@@ -28,7 +71,9 @@ the project is pre-1.0 and not yet released.
 - **`Runtime::shutdown_timeout` / `shutdown_background`.** Dropping a runtime
   waits for blocking tasks indefinitely, which for a *background* runtime can be
   a very long time — quiet work is slow by design. These bound that wait.
-- **No current-thread runtime — and it is now documented why.** Measured: a Tokio
+- **No current-thread runtime — and it is now documented why.** *(Superseded the
+  same day by `RuntimeBuilder::current_thread`, above — the analysis here still
+  holds and is exactly why that mode owns its driver thread.)* Measured: a Tokio
   current-thread runtime fires `on_thread_start` only for blocking-pool threads,
   so async tasks run on the `block_on` caller's thread at its *unmodified* QoS
   (probe: task observed `QOS_CLASS_DEFAULT` while the blocking thread observed

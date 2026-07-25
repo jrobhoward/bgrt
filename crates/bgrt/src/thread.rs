@@ -13,7 +13,11 @@ use crate::topology;
 /// frequency clamp) to the **current** thread. Best-effort: warns on failure
 /// rather than aborting, since QoS/affinity/clamp are optimizations, not
 /// correctness.
-fn classify(class: QosClass, efficiency_cores: &[usize], clamp_frequency: bool) {
+///
+/// Shared by every thread `bgrt` starts — [`ThreadBuilder`] bodies and the
+/// runtime's `on_thread_start` hook — so all three builders resolve their knobs
+/// identically.
+pub(crate) fn classify(class: QosClass, efficiency_cores: &[usize], clamp_frequency: bool) {
     if let Err(e) = crate::apply(class) {
         tracing::warn!(error = %e, "bgrt: failed to apply qos to thread");
     }

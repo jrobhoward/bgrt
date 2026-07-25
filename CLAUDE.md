@@ -54,7 +54,7 @@ Cargo workspace, edition 2024, `rust-version = 1.85.0`.
 - **`bgrt`** — the library.
   - `qos` — `QosClass { Background, Utility, Default }`, the energy class applied per thread.
   - `backend/` — per-OS dispatch (`macos.rs`, `linux.rs`, `windows.rs`), each exposing `apply(QosClass)` acting on the *current* thread. macOS = `pthread_set_qos_class_self_np`; Linux = `setpriority`; Windows = EcoQoS via `SetThreadInformation` + `SetThreadPriority`. A no-op fallback covers other platforms. `backend/uclamp.rs` adds an opt-in Linux `sched_setattr` utilization clamp (`clamp_current_thread`): for `Background`, caps `util_max` (~20%) so the cpufreq governor picks a lower clock even on homogeneous CPUs where `nice` has no frequency effect. Best-effort (no-op on old kernels/non-schedutil governors), unprivileged (only lowers), no-op off Linux.
-  - `runtime` *(feature `tokio`, on by default)* — `RuntimeBuilder` → `Runtime` wrapping a multi-thread tokio runtime; applies `QosClass` to every runtime thread (workers + blocking pool) via `on_thread_start`. `spawn` / `spawn_blocking` / `block_on` / `handle` / `qos`.
+  - `runtime` *(feature `tokio`, on by default)* — `RuntimeBuilder` → `Runtime` wrapping a multi-thread tokio runtime; applies `QosClass` to every runtime thread (workers + blocking pool) via `on_thread_start`. `spawn` / `spawn_blocking` / `block_on` / `handle` / `qos` / `shutdown_timeout` / `shutdown_background`. `current_thread(true)` switches to tokio's current-thread scheduler, driven on **one `bgrt`-spawned, classified OS thread** — never the caller's, because `on_thread_start` fires only for the blocking pool in that mode and reclassifying a foreign thread is unsound (one-way `nice` on Linux). That mode makes `Runtime::inner` a private `MultiThread | Dedicated` enum, routes `block_on` through `Handle::block_on`, and signals teardown to the driver over a `oneshot<ShutdownMode>`. See `docs/DESIGN.md` for the rationale.
   - `rayon_pool` *(feature `rayon`, off by default)* — `RayonBuilder` → `RayonPool` wrapping `rayon::ThreadPool`; applies `QosClass` in `start_handler`. `RayonPool` derefs to `rayon::ThreadPool`; use `pool.install(|| …)` to run `par_iter`/`join`/`scope` work on the quiet threads.
   - `thread` — `spawn_thread` (infallible, like `std::thread::spawn`) and `ThreadBuilder` (`io::Result`, like `std::thread::Builder`); applies QoS at the top of the thread body. Available with no feature flags.
   - `topology` — private module: E-core detection (Linux sysfs `cpu_capacity`, `efficiency_cores()`) + `sched_setaffinity` pinning (`pin_current_thread`); no-op off Linux. Reached only via the builders' `pin_efficiency_cores` knob.
@@ -67,9 +67,11 @@ and `ThreadBuilder` each expose the same trio — `qos(QosClass)`,
 `pin_efficiency_cores(bool)`, `clamp_frequency(bool)` — and each resolves them the
 same way at build time: capture the flags, look up E-cores once on the spawning
 thread, then apply QoS → pin → clamp at the top of every worker thread
-(`on_thread_start` / `start_handler` / thread body). Both extra knobs default to
-**off** and only have an effect on Linux. `spawn_thread(class, f)` is the
-no-knobs shortcut. When adding an option, add it to all three or explain why not.
+(`on_thread_start` / `start_handler` / thread body). That last step is the shared
+`thread::classify(class, &e_cores, clamp)` — one function, three call sites; keep
+it that way. Both extra knobs default to **off** and only have an effect on Linux.
+`spawn_thread(class, f)` is the no-knobs shortcut. When adding an option, add it
+to all three or explain why not.
 - **`bgrt-bench`** — the comparison harness binary (enables `bgrt/telemetry`).
   - `workload` — CPU-bound, self-sampling loop; returns work units (throughput).
   - `runner` — `Executor` (Default/Utility/Background/BackgroundThreads) → `RunResult` (wall, work, aggregate, energy, powermetrics). On macOS the threads runner matches the waiter's QoS during `join` (avoids the kernel promoting background threads off E-cores).
