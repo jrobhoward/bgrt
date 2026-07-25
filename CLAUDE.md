@@ -40,9 +40,11 @@ cargo run --example background_task -p bgrt
 cargo run --example mixed_runtimes -p bgrt
 cargo run --example quiet_threads -p bgrt
 
-# Comparison harness (sudo + --mac-power on macOS for %E/freq/power)
+# Comparison harness (sudo + --mac-power on macOS for %E/freq/power).
+# Build first, then sudo the *binary*: `sudo cargo run` rebuilds as root and may
+# not find the toolchain. Release profile is lto + codegen-units=1, so it's slow.
 cargo run --release -p bgrt-bench -- --duration 3
-sudo ./target/release/bgrt-bench --duration 3 --mac-power
+cargo build --release -p bgrt-bench && sudo ./target/release/bgrt-bench --duration 3 --mac-power
 ```
 
 ## Architecture
@@ -55,10 +57,19 @@ Cargo workspace, edition 2024, `rust-version = 1.85.0`.
   - `runtime` *(feature `tokio`, on by default)* — `RuntimeBuilder` → `Runtime` wrapping a multi-thread tokio runtime; applies `QosClass` to every runtime thread (workers + blocking pool) via `on_thread_start`. `spawn` / `spawn_blocking` / `block_on` / `handle` / `qos`.
   - `rayon_pool` *(feature `rayon`, off by default)* — `RayonBuilder` → `RayonPool` wrapping `rayon::ThreadPool`; applies `QosClass` in `start_handler`. `RayonPool` derefs to `rayon::ThreadPool`; use `pool.install(|| …)` to run `par_iter`/`join`/`scope` work on the quiet threads.
   - `thread` — `spawn_thread` (infallible, like `std::thread::spawn`) and `ThreadBuilder` (`io::Result`, like `std::thread::Builder`); applies QoS at the top of the thread body. Available with no feature flags.
-  - `topology` — E-core detection (Linux sysfs `cpu_capacity`) + `sched_setaffinity` pinning; no-op off Linux. `pin_efficiency_cores` is opt-in.
+  - `topology` — private module: E-core detection (Linux sysfs `cpu_capacity`, `efficiency_cores()`) + `sched_setaffinity` pinning (`pin_current_thread`); no-op off Linux. Reached only via the builders' `pin_efficiency_cores` knob.
   - `telemetry` *(feature `telemetry`, off by default)* — measurement primitives: `sample()` (cpu/core-type/freq), `energy_uj()`/`EnergyMeter`, `Aggregate`. Graceful `None`/`Unknown` where unavailable.
   - `error` — `thiserror` `Error` (`Backend`; `Runtime` gated on `tokio`; `ThreadPool` gated on `rayon`).
   - `examples/` — `background_task`, `mixed_runtimes` (require feature `tokio`), `quiet_threads`.
+
+**The three builders are deliberately parallel.** `RuntimeBuilder`, `RayonBuilder`,
+and `ThreadBuilder` each expose the same trio — `qos(QosClass)`,
+`pin_efficiency_cores(bool)`, `clamp_frequency(bool)` — and each resolves them the
+same way at build time: capture the flags, look up E-cores once on the spawning
+thread, then apply QoS → pin → clamp at the top of every worker thread
+(`on_thread_start` / `start_handler` / thread body). Both extra knobs default to
+**off** and only have an effect on Linux. `spawn_thread(class, f)` is the
+no-knobs shortcut. When adding an option, add it to all three or explain why not.
 - **`bgrt-bench`** — the comparison harness binary (enables `bgrt/telemetry`).
   - `workload` — CPU-bound, self-sampling loop; returns work units (throughput).
   - `runner` — `Executor` (Default/Utility/Background/BackgroundThreads) → `RunResult` (wall, work, aggregate, energy, powermetrics). On macOS the threads runner matches the waiter's QoS during `join` (avoids the kernel promoting background threads off E-cores).
@@ -94,19 +105,36 @@ Integration tests live in `crates/<crate>/tests/`. The `bgrt-bench` integration 
 between segments. Because consecutive underscores trip `non_snake_case`, every
 `*_tests.rs` file carries `#![allow(non_snake_case)]` at the top.
 
-**Test helpers:** `rstest` for parameterized tests, `tempfile::TempDir` for
-filesystem tests. Platform-specific FFI introspection helpers (e.g. `current_qos()` on macOS, `current_nice()` on Linux) live in `src/test_support.rs` and are shared across all `*_tests.rs` modules via `use crate::test_support::*`.
+**Test helpers:** `rstest` for parameterized tests. (`tempfile` is declared in
+`[workspace.dependencies]` but is not wired into `bgrt`'s dev-deps and is unused —
+sysfs-reading code is tested by extracting a pure function, e.g.
+`topology::select_efficiency_cores`, rather than by faking a filesystem.)
+Platform-specific FFI introspection helpers (e.g. `current_qos()` on macOS, `current_nice()` on Linux) live in `src/test_support.rs` and are shared across all `*_tests.rs` modules via `use crate::test_support::*`.
 
 **No `.unwrap()` / `.expect()` in production code** — use `?`. `clippy.toml`
 allows them in tests only (`allow-unwrap-in-tests = true`). Workspace lints also
 warn on `cognitive_complexity`.
 
-**Concurrency:** `parking_lot` mutexes over `std::sync`.
+**Public docs:** the library is `#![warn(missing_docs)]` — every new public item
+needs a doc comment. Doc examples that use a gated API must be `cfg`-gated too
+(see the `# #[cfg(feature = "tokio")] fn main()` pattern in `lib.rs`);
+`cargo test --workspace` runs them.
+
+**Concurrency:** `parking_lot` mutexes over `std::sync` (currently only
+`bgrt-bench` needs one — the `bgrt` library holds no locks).
 
 **Errors:** `thiserror` hierarchy in `error.rs`.
 
 **Logging:** `tracing` macros.
 
 **Platform code:** keep OS-specific FFI behind the `backend/` modules,
-`cfg`-gated; platform-specific tests are `cfg`-gated too. Windows can't be tested
-on the author's hardware — review FFI carefully and lean on CI.
+`cfg`-gated; platform-specific tests are `cfg`-gated too. There is **no CI in
+this repo** — the two cross-compile `clippy` commands above are the substitute,
+and they are the only check Windows and Linux code gets on the author's macOS
+hardware. Run them before calling a change done, and review FFI carefully.
+
+**Docs are part of "done":** land a dated entry in `CHANGELOG.md` (running
+project state), update the phase/status table in `docs/ROADMAP.md`, and put
+durable rationale — including negative results and honest caveats — in
+`docs/DESIGN.md`. The README carries the measured per-platform benchmark tables;
+refresh them when behaviour changes.

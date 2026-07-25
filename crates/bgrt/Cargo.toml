@@ -1,6 +1,7 @@
 [package]
 name = "bgrt"
 description = "Run async tasks and threads at a low energy footprint: efficiency cores, low clock, no fan spin-up."
+readme = "../../README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +14,11 @@ categories.workspace = true
 
 [lints]
 workspace = true
+
+# Without this, docs.rs builds with default features only and the `rayon` and
+# `telemetry` APIs are absent from the published documentation entirely.
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 # tokio is on by default: `RuntimeBuilder`/`Runtime` require it.
