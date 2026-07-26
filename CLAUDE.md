@@ -169,6 +169,13 @@ the *local* pre-push check on the author's macOS hardware: they prove the other
 backends type-check, not that they work. Run them before calling a change done,
 review FFI carefully, and expect CI to be the real verdict.
 
+**Supply chain:** `deny.toml` + the `deny` CI job (`cargo deny check`) enforce
+two things against the committed lock file — no RustSec advisories, and a
+**permissive-only licence allow-list**. Copyleft is excluded by omission, so
+adding an MPL/LGPL/GPL dependency fails CI by design; the fix is a PR that edits
+the allow-list and justifies it, never a silent `exceptions` entry. Run
+`cargo deny check` locally before adding or updating a dependency.
+
 **`Cargo.lock` is committed and every CI job runs `--locked`** — that's what
 makes the matrix reproducible and keeps a dependency's own MSRV bump from
 breaking the 1.85 job on a day nothing changed. (Committing it doesn't affect

@@ -1,0 +1,99 @@
+# cargo-deny configuration — https://embarkstudios.github.io/cargo-deny/
+#
+# Two questions this file answers, checked in CI (`cargo deny check`):
+#
+#   1. Does anything in the dependency graph have a security advisory?
+#   2. Is every dependency under a permissive (non-copyleft) licence?
+#
+# `bgrt` is dual-licensed MIT OR Apache-2.0 and wraps tokio and rayon, so a
+# copyleft dependency arriving transitively would be a licensing problem for
+# every downstream user, not just for this repo. The allow-list below is the
+# enforcement: anything not on it fails, which is how GPL/LGPL/AGPL/MPL/CDDL are
+# excluded — by omission rather than by an explicit deny-list that would need
+# updating every time a new copyleft licence appears.
+
+[graph]
+# The three platforms `bgrt` supports. Without this, cargo-deny evaluates every
+# target in the graph and reports on crates that can never be built here — e.g.
+# `r-efi` (a UEFI-only dependency of `getrandom`) whose licence expression
+# includes an LGPL branch it never needs to exercise.
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
+    { triple = "x86_64-apple-darwin" },
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-pc-windows-msvc" },
+]
+# Optional dependencies of workspace members still count: `rayon` and `tokio`
+# are feature-gated, but a user who enables them gets their graph too.
+all-features = true
+
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Vulnerabilities always fail. These two are policy choices:
+#   - yanked: a yanked crate in a committed lock file is a supply-chain smell
+#     worth fixing deliberately, and `--locked` means it can't self-heal.
+#   - unmaintained: limited to direct workspace dependencies. Judging a
+#     transitive crate unmaintained is upstream's call to make, not ours, and
+#     failing CI over it would mean blocking on someone else's release.
+yanked = "deny"
+unmaintained = "workspace"
+# Advisories consciously accepted, each with a rationale and a link. Empty is
+# the goal; an entry here is a decision, not a snooze button.
+ignore = []
+
+[licenses]
+# Permissive only. Every licence below has been checked to impose no reciprocal
+# source-disclosure obligation on downstream users of `bgrt`.
+#
+# Deliberately absent, and the reason this is an allow-list:
+#   - MPL-2.0        weak/file-level copyleft — the one most often waved through
+#   - LGPL-*         copyleft with linking obligations
+#   - GPL-*, AGPL-*  strong copyleft
+#   - CDDL-*, EPL-*, SSPL-*, BUSL-*
+#
+# If a dependency needs one of these, that is a decision to take explicitly
+# (in a PR that edits this list and says why), not something to discover after
+# publishing.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unlicense",
+    "0BSD",
+    "BSL-1.0",
+    # Required by `unicode-ident`, whose expression is
+    # `(MIT OR Apache-2.0) AND Unicode-3.0` — the AND makes this mandatory
+    # rather than one of several options. It is a permissive data licence.
+    "Unicode-3.0",
+]
+# The default (0.8) accepts a fuzzy text match against a known licence. These
+# are legal terms; require a near-exact match instead.
+confidence-threshold = 0.93
+# Several entries above (ISC, Zlib, BSD-*, BSL-1.0) aren't in the graph today.
+# They are pre-approved rather than reactive: each is unambiguously permissive,
+# so a routine dependency addition shouldn't red CI and prompt a rushed edit to
+# a licensing policy. Without this, cargo-deny warns about each unused entry.
+unused-allowed-license = "allow"
+# Per-crate escape hatches. Empty on purpose — see the note above.
+exceptions = []
+
+[bans]
+# Duplicate versions are allowed: this crate wraps tokio and rayon, whose graphs
+# routinely carry two versions of a low-level crate mid-migration. That is an
+# upstream timing issue, not something to fail a security check over.
+multiple-versions = "allow"
+wildcards = "deny"
+# Nothing is banned outright today. This is the place for "never link X".
+deny = []
+
+[sources]
+# Everything must come from crates.io. A git or alternate-registry dependency
+# sneaking in is exactly the supply-chain change this check should surface.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

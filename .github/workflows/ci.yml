@@ -151,6 +151,29 @@ jobs:
       - name: Test (all features)
         run: cargo test --workspace --all-features
 
+  # Supply-chain policy, enforced against the committed lock file: RustSec
+  # advisories, and a permissive-only licence allow-list (see `deny.toml`, which
+  # carries the rationale for each knob).
+  #
+  # Runs on every event, unlike `fresh-deps`. Two different failure modes matter:
+  # a PR that *adds* a vulnerable or copyleft dependency should be blocked at
+  # review time, and the weekly schedule catches an advisory published against a
+  # dependency that hasn't changed — the tree can go red without a single commit,
+  # which is the whole point of an advisory database.
+  #
+  # Linux-only: the licence and advisory graph is platform-independent, and
+  # `deny.toml` pins the five target triples explicitly so the result doesn't
+  # depend on which runner evaluates it.
+  deny:
+    name: cargo-deny (advisories + licences)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
   lint:
     name: fmt + docs
     runs-on: ubuntu-latest

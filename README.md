@@ -31,9 +31,10 @@ it onto a quiet executor.
 > **Status:** feature-complete and tested; pre-1.0, heading for a 0.9 public
 > preview (see [Stability](#stability)). All three backends execute in CI on
 > their own OS. macOS (M1) and two homogeneous Linux machines are run-verified
-> for CPU; efficiency-core pinning on hybrid Linux is
+> for CPU, and the M1 for [disk](#measuring-the-disk-half---workload-io) as well;
+> efficiency-core pinning on hybrid Linux is
 > [implemented but unmeasured](#hybrid-linux-is-implemented-but-unmeasured), and
-> the benchmarks cover CPU but [not yet disk](#benchmarking-bgrt-bench).
+> the disk numbers have not yet been reproduced on Linux or Windows.
 >
 > Design: [`docs/DESIGN.md`](docs/DESIGN.md) · plan:
 > [`docs/ROADMAP.md`](docs/ROADMAP.md) · results:
@@ -505,6 +506,7 @@ cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -Dwarnings
 cargo run --release -p bgrt-bench -- --duration 3
+cargo deny check                                    # advisories + licences
 ```
 
 Requires Rust ≥ 1.85 (edition 2024). See [`CLAUDE.md`](CLAUDE.md) for
@@ -513,6 +515,14 @@ architecture and conventions.
 CI runs the full suite on Linux, macOS, and Windows — which is where the
 per-OS backends actually execute, since each is `cfg`-gated to its own platform.
 The two cross-compile checks in `CLAUDE.md` are the local pre-push substitute.
+
+**Dependencies are permissive-licensed and advisory-checked.** `cargo deny`
+runs in CI against the committed lock file, on every push and weekly: RustSec
+advisories fail the build, and licences are checked against an allow-list of
+permissive licences only. Copyleft — MPL, LGPL, GPL, AGPL, CDDL — is excluded by
+omission, so a transitive dependency can't quietly impose source-disclosure
+obligations on anything that links `bgrt`. The policy and the reasoning behind
+each setting are in [`deny.toml`](deny.toml).
 
 ## License
 

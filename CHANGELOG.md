@@ -8,6 +8,31 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Supply-chain policy: `cargo deny` in CI — 2026-07-26
+
+- **Added `deny.toml` and a `deny` CI job** checking RustSec advisories and
+  licences against the committed lock file, on every push/PR *and* weekly. Both
+  triggers matter: a PR can add a bad dependency, and an advisory can be
+  published against a dependency that hasn't changed — the tree can go red with
+  no commit at all.
+- **Licences are a permissive-only allow-list**, so copyleft (MPL, LGPL, GPL,
+  AGPL, CDDL, EPL, SSPL, BUSL) is excluded by *omission* rather than by a
+  deny-list that would need extending every time a new one appears. Adding one
+  becomes a PR that edits the policy and justifies it. `Unicode-3.0` is allowed
+  because `unicode-ident`'s expression is `(MIT OR Apache-2.0) AND Unicode-3.0`
+  — the `AND` makes it mandatory, not optional.
+- **Security fix, found by the first run: `crossbeam-epoch` 0.9.18 →
+  0.9.20** (RUSTSEC-2026-0204 — invalid pointer dereference in the `fmt::Pointer`
+  impl for `Atomic`/`Shared`), reached transitively through `rayon`. Lock-file
+  only; no API or behaviour change, and the suite is green on the new version.
+- `[graph] targets` pins the five supported triples, so crates that can never
+  build here don't colour the result — notably `r-efi`, a UEFI-only dependency
+  of `getrandom` whose licence expression carries an LGPL branch it never
+  exercises on any platform `bgrt` supports.
+- `multiple-versions = "allow"`: wrapping tokio and rayon means duplicate
+  low-level crates mid-migration are routine upstream timing, not a defect worth
+  failing a security check over.
+
 ### Weekly `fresh-deps` CI job — 2026-07-26
 
 - **Added a scheduled job that resolves dependencies afresh** (`cargo update`,
