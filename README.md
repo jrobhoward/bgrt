@@ -271,9 +271,20 @@ Concretely, what is and isn't verified on Linux:
 |---|---|
 | `nice` mapping per QoS class | ✅ run-verified (tests assert `nice 19`) |
 | `uclamp` frequency cap | ✅ run-verified, two machines ([benchmarks](docs/BENCHMARKS.md)) |
-| `topology::select_efficiency_cores` (the selection logic) | ✅ unit-tested, incl. hybrid and three-tier layouts |
-| Reading `cpu_capacity` from sysfs on a real hybrid CPU | ❌ never executed — no such hardware available |
+| `topology::select_efficiency_cores` (capacity selection logic) | ✅ unit-tested, incl. hybrid and three-tier layouts |
+| `topology::parse_cpulist` (hybrid-PMU CPU list) | ✅ unit-tested against published i9-12900K values + malformed input |
+| Reading `cpu_atom`/`cpu_capacity` from sysfs on a real hybrid CPU | ❌ never executed — no such hardware available |
 | `sched_setaffinity` pinning to detected E-cores | ❌ never executed against a non-empty core set |
+
+**Detection uses two sources, because one doesn't cover x86.** `cpu_capacity` is
+an arm64/riscv interface and appears not to exist on x86 at all — so until
+2026-07-26 `pin_efficiency_cores` was, in all likelihood, a silent no-op on
+*every* Intel hybrid CPU. There is now a fallback to the hybrid perf PMUs
+(`/sys/bus/event_source/devices/cpu_atom/cpus`, unprivileged), which names the
+E-cores directly. **AMD hybrid parts (Zen 4c / Zen 5c) are not detected**: their
+dense cores share a PMU with the classic ones, and the kernel exposes the core
+type only through root-only debugfs. Full reasoning in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 So on an Alder Lake / Raptor Lake / Meteor Lake box, `--pin` and
 `pin_efficiency_cores(true)` should work — the syscall path is straightforward

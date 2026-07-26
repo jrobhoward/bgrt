@@ -8,6 +8,43 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Efficiency-core detection was blind to every Intel hybrid CPU — 2026-07-26
+
+- **Fixed: `topology::efficiency_cores()` read only sysfs `cpu_capacity`, which
+  appears not to exist on x86.** That attribute arrived in 2016 as an arm/arm64
+  feature (`arch_topology.c`, `CONFIG_GENERIC_ARCH_TOPOLOGY`); Intel explicitly
+  proposed a *different* interface in 2020 rather than adopting it; and while
+  `intel_pstate` has fed asymmetric capacity to the scheduler since 2024, it does
+  so through an x86-specific per-CPU variable, not the generic topology code that
+  publishes the sysfs file. So `pin_efficiency_cores(true)` was almost certainly
+  a **silent no-op on Alder Lake and every later hybrid part** — indistinguishable
+  from the correct no-op on a homogeneous CPU, which is precisely the failure this
+  project flags as the dangerous one.
+- **Second source added: the hybrid perf PMUs.** The kernel registers `cpu_core`
+  and `cpu_atom` PMUs on hybrid x86, each exposing a `cpus` file; on an
+  i9-12900K, `cpu_atom/cpus` reads `16-23`. Unprivileged, absent on non-hybrid
+  machines (so the homogeneous case still yields empty), and *authoritative* —
+  `cpu_atom` is the E-core list outright, needing no minimum-wins inference.
+  `efficiency_cores()` now tries `cpu_capacity` first, then the PMU.
+- **New pure `parse_cpulist`**, covering ranges, comma lists, and mixed forms,
+  with malformed fields skipped rather than fatal. Nine tests, including the
+  published 12900K values, a reversed range, and a `0-99999999` range that must
+  not allocate unboundedly. Being pure is what makes the decision testable on
+  macOS, where the sysfs read can never run.
+- **AMD hybrid (Zen 4c / Zen 5c) is deliberately not detected.** The dense cores
+  share a PMU with the classic ones, so there is no `cpu_atom` equivalent, and
+  the kernel exposes core type (CPUID `0x80000026`, `X86_FEATURE_AMD_HTR_CORES`)
+  only via root-only debugfs. Returning empty disables pinning rather than
+  pinning to a wrong set. **Not** inferred from `cpufreq/cpuinfo_max_freq`:
+  per-core boost binning makes homogeneous CPUs report differing maximums there,
+  so minimum-wins over that field would mistake a binned Threadripper for a
+  hybrid and confine background work to one arbitrary core.
+- **Still unverified on real hybrid silicon**, and labelled as such. The parser
+  is tested off-hardware; the sysfs read and `sched_setaffinity` against a
+  non-empty set have still never executed. The README and `ROADMAP.md` rows,
+  which previously read as purely hardware-blocked, now say plainly that this was
+  partly a software gap.
+
 ### Pre-0.9 API commitments and a documentation reconciliation — 2026-07-26
 
 - **`QosClass` is now `#[non_exhaustive]`.** Matching it from outside `bgrt`

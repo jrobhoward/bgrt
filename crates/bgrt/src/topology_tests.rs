@@ -1,7 +1,66 @@
 //! Tests for CPU topology detection.
 #![allow(non_snake_case)]
 
-use super::select_efficiency_cores;
+use super::{parse_cpulist, select_efficiency_cores};
+
+// The Intel hybrid PMU path (`cpu_atom/cpus`) is a cpulist string, so the whole
+// decision is testable off Linux — which matters, because the sysfs read itself
+// only ever executes on hybrid x86 hardware nobody here has.
+
+#[test]
+fn parse_cpulist____single_range____expands_inclusively() {
+    // Real i9-12900K value: cpu_core/cpus reads "0-15", cpu_atom/cpus "16-23".
+    assert_eq!(
+        parse_cpulist("16-23\n"),
+        vec![16, 17, 18, 19, 20, 21, 22, 23]
+    );
+}
+
+#[test]
+fn parse_cpulist____comma_separated_singles____keeps_each() {
+    assert_eq!(parse_cpulist("0,2,4"), vec![0, 2, 4]);
+}
+
+#[test]
+fn parse_cpulist____mixed_ranges_and_singles____merges_sorted_and_deduped() {
+    assert_eq!(parse_cpulist("8-11,0,2-3,8"), vec![0, 2, 3, 8, 9, 10, 11]);
+}
+
+#[test]
+fn parse_cpulist____single_cpu____is_one_entry() {
+    assert_eq!(parse_cpulist("7"), vec![7]);
+}
+
+#[test]
+fn parse_cpulist____empty_or_blank____is_empty() {
+    assert!(parse_cpulist("").is_empty());
+    assert!(parse_cpulist("\n").is_empty());
+    assert!(parse_cpulist(",,").is_empty());
+}
+
+#[test]
+fn parse_cpulist____malformed_fields____are_skipped_not_fatal() {
+    // A partial answer beats none: the good fields survive a corrupt neighbour.
+    assert_eq!(parse_cpulist("0-1,junk,4,x-y"), vec![0, 1, 4]);
+}
+
+#[test]
+fn parse_cpulist____reversed_range____is_dropped() {
+    // "5-2" is corruption, not an empty set; it must not loop or panic.
+    assert_eq!(parse_cpulist("5-2,9"), vec![9]);
+}
+
+#[test]
+fn parse_cpulist____absurd_range____does_not_allocate_unboundedly() {
+    // Guards against a corrupt file turning into a multi-gigabyte Vec.
+    assert!(parse_cpulist("0-99999999").is_empty());
+}
+
+#[test]
+fn parse_cpulist____out_of_range_singles____are_filtered() {
+    // pin_current_thread cannot address beyond CPU_SETSIZE, so neither do we.
+    assert_eq!(parse_cpulist("3,4096"), vec![3]);
+}
 
 #[test]
 fn select_efficiency_cores____hybrid____returns_min_capacity_cpus() {

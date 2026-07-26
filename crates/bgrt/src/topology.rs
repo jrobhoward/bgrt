@@ -1,22 +1,62 @@
 //! Detection of CPU efficiency cores and thread affinity.
 //!
-//! **Detection** works on Linux (per-CPU capacity from sysfs) and Windows (the
-//! CPU Sets API); macOS exposes no unprivileged equivalent. **Pinning** is Linux
-//! only — macOS background QoS and Windows EcoQoS place work on efficient cores
-//! themselves, and a hard affinity mask would fight that rather than help, so
-//! [`pin_current_thread`] is deliberately a no-op off Linux even where the
-//! efficiency-core set is known.
+//! **Detection** works on Linux (per-CPU capacity, or the hybrid perf PMUs) and
+//! Windows (the CPU Sets API); macOS exposes no unprivileged equivalent.
+//! **Pinning** is Linux only — macOS background QoS and Windows EcoQoS place
+//! work on efficient cores themselves, and a hard affinity mask would fight that
+//! rather than help, so [`pin_current_thread`] is deliberately a no-op off Linux
+//! even where the efficiency-core set is known.
 //!
-//! Both platforms reduce to the same rule: efficiency cores are the CPUs at the
+//! Most sources reduce to the same rule: efficiency cores are the CPUs at the
 //! *minimum* capacity/class, and a CPU where every core is equal is homogeneous
-//! and yields an empty set. See [`select_efficiency_cores`].
+//! and yields an empty set. See [`select_efficiency_cores`]. The Intel hybrid
+//! PMU is the exception — it names the E-cores outright, so it needs no
+//! comparison; see [`efficiency_cores`] for why both paths exist and which
+//! hardware each covers.
 
 use crate::error::Error;
 
 /// OS CPU indices of the efficiency cores, or empty if the topology is unknown
 /// or homogeneous (in which case no pinning should be attempted).
+///
+/// Two sources are tried in order, because no single sysfs interface covers
+/// every heterogeneous CPU Linux runs on:
+///
+/// 1. **`cpu_capacity`** — per-CPU capacity, minimum wins. This is the
+///    arm64/riscv interface, published by `arch_topology.c` under
+///    `CONFIG_GENERIC_ARCH_TOPOLOGY`.
+/// 2. **The hybrid perf PMUs** — `cpu_atom`'s CPU list, for Intel hybrid x86.
+///
+/// The second exists because **x86 does not appear to publish `cpu_capacity`**.
+/// The attribute arrived in 2016 as an arm/arm64 feature; Intel deliberately
+/// proposed a different interface rather than adopting it; and while
+/// `intel_pstate` has set asymmetric capacity for the *scheduler* since 2024, it
+/// does so through an x86-specific per-CPU variable rather than the generic
+/// topology code that creates the sysfs file. Relying on source 1 alone
+/// therefore made `pin_efficiency_cores` a silent no-op on Alder Lake and later
+/// — indistinguishable from the correct no-op on a homogeneous CPU, which is
+/// exactly the failure this ordering exists to prevent.
+///
+/// **AMD hybrid parts (Zen 4c / Zen 5c) are not detected.** Their core type is
+/// only exposed unprivileged via `debugfs` (`/sys/kernel/debug/x86/topo/`),
+/// which `bgrt` will not require, and the dense cores share a PMU with the
+/// classic ones so there is no `cpu_atom` equivalent. Returning empty is the
+/// honest answer: it disables pinning rather than pinning to the wrong set.
+/// Deliberately *not* guessed from `cpufreq/cpuinfo_max_freq` — per-core boost
+/// binning makes homogeneous CPUs look heterogeneous there, and mistaking a
+/// binned Threadripper for a hybrid would confine work to one arbitrary core.
 #[cfg(target_os = "linux")]
 pub(crate) fn efficiency_cores() -> Vec<usize> {
+    let from_capacity = capacity_efficiency_cores();
+    if !from_capacity.is_empty() {
+        return from_capacity;
+    }
+    hybrid_pmu_efficiency_cores()
+}
+
+/// Efficiency cores per sysfs `cpu_capacity` (arm64/riscv), minimum wins.
+#[cfg(target_os = "linux")]
+fn capacity_efficiency_cores() -> Vec<usize> {
     let Ok(dir) = std::fs::read_dir("/sys/devices/system/cpu") else {
         return Vec::new();
     };
@@ -39,6 +79,71 @@ pub(crate) fn efficiency_cores() -> Vec<usize> {
         caps.push((idx, cap));
     }
     select_efficiency_cores(caps)
+}
+
+/// Efficiency cores per the Intel hybrid perf PMUs.
+///
+/// The kernel registers a PMU per core type on hybrid x86 — `cpu_core` for the
+/// P-cores (Golden Cove and successors) and `cpu_atom` for the E-cores
+/// (Gracemont and successors) — each with a `cpus` file holding that type's CPU
+/// list. On an i9-12900K, `cpu_core/cpus` reads `0-15` and `cpu_atom/cpus` reads
+/// `16-23`. Merged alongside Alder Lake perf support, and readable unprivileged.
+///
+/// Neither file exists on a non-hybrid machine, so absence correctly yields an
+/// empty set. Unlike `cpu_capacity` this is authoritative rather than
+/// comparative: `cpu_atom` *is* the efficiency-core list, so there is no
+/// minimum-wins rule to apply and no homogeneous case to rule out.
+#[cfg(target_os = "linux")]
+fn hybrid_pmu_efficiency_cores() -> Vec<usize> {
+    // The `/sys/bus/event_source/devices` path is the canonical one; `/sys/devices`
+    // is a symlinked view of the same PMU.
+    let Ok(text) = std::fs::read_to_string("/sys/bus/event_source/devices/cpu_atom/cpus") else {
+        return Vec::new();
+    };
+    parse_cpulist(&text)
+}
+
+/// Parse a kernel CPU-list string — comma-separated indices and inclusive
+/// ranges, e.g. `"16-23"`, `"0,2,4"`, `"0-3,8-11"`.
+///
+/// Malformed entries are skipped rather than failing the whole read: this feeds
+/// an optimization, and a partial answer beats none. Implausibly wide ranges are
+/// dropped so a corrupt file cannot make us allocate unboundedly; `CPU_SETSIZE`
+/// is the ceiling because [`pin_current_thread`] cannot address beyond it anyway.
+#[cfg(any(target_os = "linux", test))]
+fn parse_cpulist(text: &str) -> Vec<usize> {
+    /// Matches `libc::CPU_SETSIZE`, the widest mask `sched_setaffinity` takes.
+    const MAX_CPUS: usize = 1024;
+
+    let mut out = Vec::new();
+    for field in text.trim().split(',') {
+        let field = field.trim();
+        if field.is_empty() {
+            continue;
+        }
+        match field.split_once('-') {
+            None => {
+                if let Ok(cpu) = field.parse::<usize>() {
+                    out.push(cpu);
+                }
+            }
+            Some((start, end)) => {
+                let (Ok(start), Ok(end)) = (start.trim().parse::<usize>(), end.trim().parse())
+                else {
+                    continue;
+                };
+                // A reversed or absurd range is corruption, not a CPU set.
+                if start > end || end >= MAX_CPUS {
+                    continue;
+                }
+                out.extend(start..=end);
+            }
+        }
+    }
+    out.retain(|&cpu| cpu < MAX_CPUS);
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// Given `(cpu_index, capacity)` pairs, return the CPUs at the **minimum**

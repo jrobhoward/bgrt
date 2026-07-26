@@ -152,9 +152,56 @@ reasoning for each is in [`DESIGN.md`](DESIGN.md).
 | Gap | Standing |
 |---|---|
 | `bgrt-bench` measures CPU only, not disk | **Blocks 0.9** (above) |
-| Hybrid-Linux E-core pinning never run on P+E silicon | Hardware-blocked. Selection logic unit-tested; the sysfs read and `sched_setaffinity` have never executed against a non-empty core set. Needs Alder/Raptor/Meteor Lake |
+| Hybrid-Linux E-core pinning never run on P+E silicon | **Partly a software gap, not purely hardware-blocked** — see below. Needs Alder/Raptor/Meteor Lake to confirm end to end |
+| AMD hybrid (Zen 4c / Zen 5c) is not detected at all | Deliberate. No unprivileged interface exists to detect it — see below |
 | Windows throughput under contention unmeasured | Behaviour-tested in CI; performance reasoned from Microsoft's docs and from what Chromium ships |
 | macOS I/O coverage structurally unassertable | `setiopolicy_np` would opt the thread out of QoS entirely — deliberately never called. Guarded by a regression test |
 | Windows E/P *labelling* branch unexercised | CI runners are homogeneous VMs. Placement is EcoQoS's job, so this affects telemetry only |
 | CI flake watch | `tests/comparison.rs` asserts background `max_mhz` ≤ default. Green so far; if it flakes, widen to a tolerance band rather than deleting it |
 | macOS `Background` can be very slow | E-core jail; `Utility` is the documented middle ground (LLVM/clangd hit exactly this) |
+
+### Efficiency-core detection on x86 — what changed, and what is left
+
+This row read as purely hardware-blocked until 2026-07-26, which was wrong in a
+way worth recording: it implied the code was fine and only a test machine was
+missing.
+
+**`cpu_capacity` appears not to exist on x86.** It arrived in 2016 as an
+arm/arm64 attribute (`arch_topology.c`, `CONFIG_GENERIC_ARCH_TOPOLOGY`); Intel
+explicitly proposed a *different* interface in 2020 rather than adopting it; and
+although `intel_pstate` has fed asymmetric capacity to the scheduler since 2024,
+it does so via an x86-specific per-CPU variable, not the generic topology code
+that creates the sysfs file. So `pin_efficiency_cores(true)` was almost certainly
+a **silent no-op on every Intel hybrid CPU** — the exact failure mode this
+project calls out elsewhere, since it is indistinguishable from the correct
+no-op on a homogeneous machine.
+
+**Fixed by adding a second source:** the hybrid perf PMUs. The kernel registers
+`cpu_core` and `cpu_atom` PMUs on hybrid x86, each with a `cpus` file; on an
+i9-12900K `cpu_atom/cpus` reads `16-23`. It is unprivileged, authoritative
+(no minimum-wins inference needed), and absent on non-hybrid machines, so the
+homogeneous case still yields empty. `topology::efficiency_cores()` now tries
+`cpu_capacity` first, then the PMU.
+
+**Still unverified**, and why this stays a gap: nobody has run it on real hybrid
+silicon. The cpulist parser is unit-tested against the published 12900K values
+and the malformed cases, so the *decision* is covered off-hardware — but the
+sysfs read and `sched_setaffinity` against a non-empty set have still never
+executed. Treat as untested code until someone runs
+`cargo run --release -p bgrt-bench -- --duration 3 --pin` on Alder Lake or later.
+
+**AMD is intentionally out of scope.** Zen 4c / Zen 5c ("dense") cores are the
+same ISA and microarchitecture as their classic siblings, differing in clock
+ceiling and cache — so they share a PMU, and there is no `cpu_atom` equivalent.
+The kernel does know the core type (CPUID `0x80000026`,
+`X86_FEATURE_AMD_HTR_CORES`), but exposes it to userspace only through
+**debugfs** (`/sys/kernel/debug/x86/topo/`), which is root-only and something
+this library will not require. Detection therefore returns empty, which disables
+pinning rather than pinning to a wrong set.
+
+Deliberately **not** inferred from `cpufreq/cpuinfo_max_freq`: per-core boost
+binning and ITMT favoured cores make genuinely homogeneous CPUs report differing
+maximums, so a minimum-wins rule over that field would mistake a binned
+Threadripper for a hybrid and confine background work to one arbitrary core.
+Revisit if AMD's core type gains a non-debugfs interface — the Zen 6 low-power
+core work suggests that pressure is building.
