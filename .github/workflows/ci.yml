@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Mondays 06:00 UTC — drives the `fresh-deps` job below, which is the only
+  # thing here that resolves dependencies afresh.
+  schedule:
+    - cron: "0 6 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -101,6 +105,51 @@ jobs:
 
       - name: Check
         run: cargo check --workspace --all-features --locked
+
+  # Every other job runs `--locked`, which is what makes CI reproducible — and
+  # also means nothing ever tests against newer dependencies. This job closes
+  # that blind spot: it updates the lock file in the runner (never committed)
+  # and runs the suite against whatever resolves today. It is how a
+  # semver-compatible upstream release that breaks us gets found on a Monday
+  # rather than by a contributor mid-task.
+  #
+  # Scheduled/manual only, so it can never block a PR — a failure here is a
+  # notification, not a gate. GitHub emails the workflow's last editor when a
+  # scheduled run fails, which is the intended signal.
+  #
+  # Deliberately uncached: restoring a `target` built against the *old* lock
+  # file would undercut the point of resolving fresh.
+  fresh-deps:
+    name: fresh deps (${{ matrix.os }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+          rustc --version
+
+      # `resolver = "3"` makes this MSRV-aware, so it won't pull dependencies
+      # that need a newer rustc than `rust-version = "1.85.0"` — an update that
+      # passes here shouldn't break the msrv job.
+      - name: Update dependencies
+        run: cargo update
+
+      - name: Show what moved
+        run: git --no-pager diff --stat -- Cargo.lock
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -Dwarnings
+
+      - name: Test (all features)
+        run: cargo test --workspace --all-features
 
   lint:
     name: fmt + docs

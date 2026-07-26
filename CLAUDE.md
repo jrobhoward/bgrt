@@ -169,6 +169,16 @@ the *local* pre-push check on the author's macOS hardware: they prove the other
 backends type-check, not that they work. Run them before calling a change done,
 review FFI carefully, and expect CI to be the real verdict.
 
+**`Cargo.lock` is committed and every CI job runs `--locked`** — that's what
+makes the matrix reproducible and keeps a dependency's own MSRV bump from
+breaking the 1.85 job on a day nothing changed. (Committing it doesn't affect
+downstream users: a dependency's lock file is ignored.) The blind spot that
+creates — nothing ever resolving fresh — is covered by the weekly `fresh-deps`
+job, which runs `cargo update` in the runner and then clippy + tests. It is
+**scheduled/manual only**, so it can never block a PR; a failure there is a
+notification that an upstream release broke us, and the fix is a deliberate
+lock-file update, not a CI change.
+
 **Semver:** `QosClass` and `Error` are `#[non_exhaustive]`. MSRV increases are
 minor bumps, never patches. `telemetry` is exempt from semver entirely. A Tokio
 or rayon major is a `bgrt` major — the crate wraps those runtimes rather than

@@ -8,6 +8,23 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Weekly `fresh-deps` CI job — 2026-07-26
+
+- **Added a scheduled job that resolves dependencies afresh** (`cargo update`,
+  then clippy + tests, all features, 3-OS matrix). Every other job runs
+  `--locked`, which is what makes CI reproducible but also meant nothing ever
+  tested against newer dependencies: a semver-compatible upstream release that
+  broke the build would have surfaced whenever a contributor next ran
+  `cargo update`, mid-task.
+- **Scheduled and `workflow_dispatch` only, so it cannot block a PR.** A failure
+  is a notification that upstream moved, not a gate. Uncached on purpose —
+  restoring a `target` built against the old lock file would undercut the point.
+- `resolver = "3"` keeps the update MSRV-aware, so it won't pull dependencies
+  needing a newer rustc than 1.85.0 and then hand the MSRV job a false failure.
+- Verified locally before landing: fresh resolution moved 18 crates (including
+  tokio 1.52.3 → 1.53.1) and the suite stayed green. The lock file itself is
+  unchanged — the job updates only inside the runner.
+
 ### `bgrt-bench` measures disk, closing the last 0.9 blocker — 2026-07-26
 
 - **Added `--workload cpu|io|both`.** `io` runs random, page-cache-bypassing
