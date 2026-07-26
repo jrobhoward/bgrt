@@ -1,13 +1,12 @@
-//! `bgrt` — a *background runtime*: run async tasks and threads at the lowest
-//! energy footprint the operating system allows (efficiency cores, low clock
-//! frequency) without spinning up the fans, while still making forward progress
-//! under load.
+//! `bgrt` — a background runtime: run async tasks and threads at a reduced
+//! energy footprint (efficiency cores, low clock speed) without spinning up the
+//! fans, while still making forward progress under load.
 //!
-//! The mechanism is a per-thread energy [`QosClass`] applied once when a thread
-//! starts. It maps to the native low-energy facility on each OS — macOS QoS
-//! classes, Windows EcoQoS + background mode, Linux `nice` + `ioprio` — and runs
-//! as a regular (non-admin) user. A class covers **CPU and block I/O**; see
-//! [`QosClass`] for what each platform delivers.
+//! The mechanism is a per-thread energy [`QosClass`], applied once when a thread
+//! starts. It maps to the low-energy facility each OS already has — macOS QoS
+//! classes, Windows EcoQoS with background mode, Linux `nice` with `ioprio` —
+//! and runs as an ordinary non-admin user. A class covers CPU and block I/O; see
+//! [`QosClass`] for what each platform does.
 //!
 //! # What's available
 //!
@@ -28,7 +27,7 @@
 //! # Ok::<(), bgrt::Error>(())
 //! ```
 //!
-//! Spawn a quiet OS thread:
+//! Spawn a low-priority OS thread:
 //!
 //! ```
 //! use bgrt::QosClass;
@@ -37,7 +36,7 @@
 //! assert_eq!(handle.join().unwrap(), 4950);
 //! ```
 //!
-//! Build a quiet async runtime (feature `tokio`, on by default):
+//! Build a low-priority async runtime (feature `tokio`, on by default):
 //!
 //! ```
 //! # #[cfg(feature = "tokio")] fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,7 +49,7 @@
 //! # #[cfg(not(feature = "tokio"))] fn main() {}
 //! ```
 //!
-//! Build a quiet rayon pool (feature `rayon`):
+//! Build a low-priority rayon pool (feature `rayon`):
 //!
 //! ```
 //! # #[cfg(feature = "rayon")] fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -65,49 +64,48 @@
 //!
 //! # Semver and wrapped dependencies
 //!
-//! `bgrt` **wraps** Tokio and rayon rather than hiding them, so their types are
-//! part of its public API by design: [`Runtime::spawn`] returns Tokio's
-//! `JoinHandle`, [`Runtime::handle`] hands back its `Handle`, and [`RayonPool`]
-//! derefs to `rayon::ThreadPool`. Passing those through is the point — a wrapper
-//! that hid them would force you to give up the ecosystem built on them.
+//! `bgrt` wraps Tokio and rayon rather than hiding them, so their types are part
+//! of its public API by design: [`Runtime::spawn`] returns Tokio's `JoinHandle`,
+//! [`Runtime::handle`] hands back its `Handle`, and [`RayonPool`] derefs to
+//! `rayon::ThreadPool`. Passing those through is the point; a wrapper that hid
+//! them would cut callers off from the ecosystem built on them.
 //!
-//! The consequence is that **a major release of Tokio or rayon is a major
-//! release of `bgrt`**, and the two majors cannot be mixed: a
-//! `&tokio_1::runtime::Handle` is a different type from its 2.x counterpart. To
-//! name the exact versions `bgrt` resolved without declaring them yourself, use
-//! the re-exports [`tokio`] and [`rayon`].
+//! So a major release of Tokio or rayon is a major release of `bgrt`, and the two
+//! majors cannot be mixed: a `&tokio_1::runtime::Handle` is a different type from
+//! its 2.x counterpart. The re-exports [`tokio`] and [`rayon`] name the exact
+//! versions `bgrt` resolved, which avoids declaring them separately.
 //!
 //! Two things sit outside this. The [`telemetry`] module is exempt from semver
-//! altogether (see its docs). And [`Error`] deliberately boxes rayon's build
-//! error, so the enum's shape survives rayon reshaping its own error type —
-//! that is about *this* enum staying stable, not about hiding the dependency.
+//! altogether; see its docs. And [`Error`] boxes rayon's build error so that this
+//! enum's shape survives rayon reshaping its own error type — that is about
+//! keeping the enum stable rather than about hiding the dependency.
 //!
-//! The minimum supported Rust version is **1.85.0** (edition 2024). An MSRV
-//! increase is a **minor** version bump, never a patch, and never happens in a
-//! patch release of an existing minor.
+//! The minimum supported Rust version is 1.85.0 (edition 2024). Raising it is a
+//! minor version bump, never a patch.
 //!
 //! # Limitations
 //!
 //! Three caveats bound what a [`QosClass`] can promise. Each is documented in
 //! full where it applies; in brief:
 //!
-//! - **Classification stops at the thread `bgrt` created.** Child threads
-//!   inherit only on Linux — macOS and Windows start them unclassified, and
-//!   neither can be corrected from outside, because their APIs act only on the
-//!   calling thread. Handing a `Background` thread to a library that runs its
-//!   own pool leaves that pool at full priority on two of three platforms. See
-//!   [`QosClass`] and the [thread module](self::spawn_thread).
-//! - **Frequency is biased, not guaranteed.** `bgrt` expresses intent to the
-//!   scheduler; it cannot pin a clock from userspace, and quiet work can still
-//!   clock up under other system load.
-//! - **Some mappings are inert on some configurations.** Linux I/O priority
-//!   needs an I/O scheduler that honours it (`none`, a common NVMe default, does
-//!   not), and the opt-in `uclamp` frequency cap needs `schedutil`. Inert rather
-//!   than wrong, and documented per-knob.
+//! - **Classification stops at the thread `bgrt` created.** Child threads inherit
+//!   on Linux only. macOS and Windows start them unclassified, and neither can be
+//!   corrected from outside, because those APIs act only on the calling thread.
+//!   Handing a `Background` thread to a library that runs its own pool leaves that
+//!   pool at full priority on two of the three platforms. See [`QosClass`] and
+//!   [`spawn_thread`].
+//! - **Frequency is biased, not guaranteed.** `bgrt` states intent to the
+//!   scheduler. It cannot pin a clock from userspace, and low-priority work can
+//!   still clock up when the rest of the machine is busy.
+//! - **Some mappings do nothing on some configurations.** Linux I/O priority needs
+//!   an I/O scheduler that honours it (`none`, a common NVMe default, does not),
+//!   and the optional `uclamp` frequency cap needs `schedutil`. Those cases do
+//!   nothing rather than something wrong, and each knob documents its own.
 //!
-//! The full per-platform detail, the measured results behind it, and the
-//! negative results live in the repository: `README.md` for the benchmark tables
-//! and the inheritance table, `docs/DESIGN.md` for the rationale.
+//! The per-platform detail is in the repository: `README.md` for usage and the
+//! caveats that affect it, `docs/BENCHMARKS.md` for measured results and how to
+//! reproduce them, and `docs/DESIGN.md` for the reasoning and the negative
+//! results.
 #![warn(missing_docs)]
 // docs.rs builds with `--cfg docsrs` (see `[package.metadata.docs.rs]`), which
 // turns on the feature badges that tell a reader an item needs a feature flag.

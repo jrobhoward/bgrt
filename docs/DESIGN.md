@@ -1,554 +1,716 @@
 # bgrt — Design
 
-This document captures the **durable design** of `bgrt`: the mechanism, the
-decisions, and the things we learned. For the phased build plan and status see
-[`ROADMAP.md`](ROADMAP.md); for the contributor module map see
-[`../CLAUDE.md`](../CLAUDE.md).
+The lasting design of `bgrt`: the mechanism, the decisions, and what turned up
+along the way. For status and the release plan see [`ROADMAP.md`](ROADMAP.md);
+for the module map see [`../CLAUDE.md`](../CLAUDE.md).
 
 ## Purpose
 
-Run units of work — async tasks and OS threads — at the lowest energy footprint
-the OS allows (efficiency cores, low clock frequency, no fan spin-up), as a
-regular (non-admin) user, on macOS, Windows, and Linux, including heterogeneous
-(P+E / big.LITTLE) CPUs. Developers write ordinary async/sync Rust and schedule
-it onto a quiet executor.
+Run units of work — async tasks and OS threads — at a low energy footprint:
+efficiency cores, low clock speed, no fan spin-up. It works as an ordinary
+non-admin user on macOS, Windows, and Linux, including P+E and big.LITTLE
+processors. The work is ordinary async or sync Rust; what changes is the executor
+it runs on.
 
 ## Goals and non-goals
 
-**Goals**
-- Per-thread / per-executor energy classification, unprivileged.
-- Don't trigger performance-core turbo or the fans for background work.
-- Never starve: quiet work still makes forward progress under load.
-- Wrap tokio, don't fork it.
+Goals:
 
-**Non-goals**
-- Setting an explicit CPU frequency or switching the governor (firmware/governor
-  territory, system-wide). We do express a per-thread *frequency bias*: on Linux
-  the opt-in `uclamp` cap (`clamp_frequency`) lowers the clock the governor picks
-  for a `Background` thread — a hint, not a set point, and unprivileged.
-- A hard CPU-time quota (e.g. "30% of a core"). That's a separate axis; on Linux
-  it belongs to cgroups, and it isn't the "stay cool" goal. Deliberately omitted.
-- Dynamic per-*task* re-classification. Classification is per-thread, set once.
-- Being a general tokio replacement — `bgrt` *configures* a tokio runtime.
-- **GPU work of any kind** — see
-  [Scope](#scope-cpu-and-io-now-gpu-probably-never). Not on the roadmap and
-  unlikely ever to be, but the objections are about the current state of the
-  platforms rather than about principle, so they are written as conditions that
+- Per-thread and per-executor energy classification, without privileges.
+- Keep background work from waking the performance cores or the fans.
+- Never starve. Low-priority work still moves forward under load.
+- Wrap tokio rather than fork it.
+
+Non-goals:
+
+- **Setting a CPU frequency or switching the governor.** That is firmware and
+  governor territory, and it is system-wide. What the library does express is a
+  per-thread frequency *bias*: on Linux the optional `uclamp` cap
+  (`clamp_frequency`) lowers the clock the governor picks for a `Background`
+  thread. It is a hint rather than a setting, and it needs no privileges.
+- **A hard CPU-time quota**, such as "30% of a core". That is a different axis; on
+  Linux it belongs to cgroups, and it is not what "stay cool" means here.
+- **Per-task reclassification.** Classification is per thread and set once.
+- **Replacing tokio.** `bgrt` configures a tokio runtime.
+- **GPU work of any kind.** See [Scope](#scope-cpu-and-io-now-gpu-probably-never).
+  It is not planned and is unlikely, but the objections describe the current state
+  of the platforms rather than a principle, so they are written as conditions that
   could change.
 
-`bgrt` is a **CPU and block-I/O** scheduling-hint library — one `QosClass`
-governs both. GPU is out of scope for the foreseeable future. The reasoning for
-both is below, because "why don't you do X" is a question worth answering once in
-writing.
+`bgrt` is a scheduling-hint library for CPU and block I/O; one `QosClass` governs
+both. GPU is out of scope for the foreseeable future. The reasoning for both is
+below, because "why not do X" is worth answering once in writing.
 
 ## The mechanism
 
-Every modern OS exposes a per-thread **energy quality-of-service** hint. Setting
-it tells the scheduler "optimize this thread for energy, not speed," which it
-turns into *both* efficiency-core placement *and* a downward DVFS bias. We
-express intent; the kernel does the right thing per machine. We never set
-frequency directly (firmware/governor territory, and not per-thread).
+Every modern OS exposes a per-thread energy quality-of-service hint. Setting it
+tells the scheduler to optimize the thread for energy rather than speed, which it
+turns into both efficiency-core placement and a downward DVFS bias. The library
+states intent and lets the kernel do what suits the machine. It never sets a
+frequency directly.
 
-The whole library is built on one operation — apply a [`QosClass`] to the
-**current** thread — invoked from a runtime's thread-start hook or at the top of
-a spawned thread. Classification is unprivileged because we only ever *lower* a
-thread's own demands.
+The whole thing is built on one operation: apply a `QosClass` to the *current*
+thread, called from a runtime's thread-start hook or at the top of a spawned
+thread. It needs no privileges because it only ever lowers a thread's own
+demands.
 
 ## QoS classes and per-OS mapping
 
-The mapping table is maintained in one place — [the README](../README.md#qos-classes)
-— because it was previously restated in four files and drifted in three of them.
-This section carries only the *reasoning* behind it.
+The mapping table lives in [the README](../README.md#qos-classes). It was once
+restated in four files and had drifted in three of them, so this section carries
+only the reasoning.
 
-Rationale:
-- **`Background` is the "fans never" class.** On Apple Silicon it is hard-confined
-  to efficiency cores — and keeping work *off the P-cores* is what actually avoids
-  the turbo/fan spike.
-- **`Utility` is "quiet but progresses faster."** On macOS, `Background` can be
-  very slow (E-core jail); LLVM/clangd hit exactly this and switched to Utility.
-  It's the middle ground: lower priority, but not core-confined.
+- **`Background` is the class that never wakes the fans.** On Apple Silicon it is
+  confined to the efficiency cores, and keeping work off the performance cores is
+  what actually avoids the turbo and fan spike.
+- **`Utility` sits between the two.** On macOS,
+  `Background` can be very slow because of that core confinement; LLVM and clangd
+  hit this and switched to `Utility`. It lowers priority without confining the
+  work to a core type.
 
 ### Platform notes for future backends
 
-- **FreeBSD:** `setpriority(PRIO_PROCESS, 0, nice)` is **process-wide** on
-  FreeBSD — do not copy the Linux backend. FreeBSD threads have kernel LWPs but
-  `PRIO_PROCESS` targets the whole process. The correct call is
-  `setpriority(PRIO_THREAD, 0, nice)`, a BSD-specific extension for per-LWP
-  niceness. Until then, FreeBSD correctly hits the no-op fallback and the API is
-  safe to call everywhere.
+- **FreeBSD:** `setpriority(PRIO_PROCESS, 0, nice)` is process-wide there, so the
+  Linux backend cannot be copied across. FreeBSD threads have kernel LWPs, but
+  `PRIO_PROCESS` targets the whole process; the right call is
+  `setpriority(PRIO_THREAD, 0, nice)`, a BSD extension for per-LWP niceness.
+  Until someone writes that, FreeBSD lands on the no-op fallback, so the API is
+  safe to call there.
 
 ### Anti-starvation
 
-Each `Background` mapping is **weighted-fair, not run-only-when-idle**, so quiet
-work always gets a (small) share under contention:
-- Linux uses `nice(19)`, **not `SCHED_IDLE`** (which can starve to ~0% forever).
-- Windows uses EcoQoS + `BELOW_NORMAL`, **not `THREAD_PRIORITY_IDLE`**. EcoQoS is
-  orthogonal to priority — it handles efficiency; priority handles fairness.
-- macOS background QoS is priority-band time-sharing on the E-cores, not idle-only.
+Each `Background` mapping is weighted-fair rather than run-only-when-idle, so
+low-priority work keeps a small share under contention.
+
+- Linux uses `nice(19)` rather than `SCHED_IDLE`, which can starve a thread to
+  nearly nothing indefinitely.
+- Windows uses EcoQoS with `BELOW_NORMAL` rather than `THREAD_PRIORITY_IDLE`.
+  EcoQoS is separate from priority: it handles efficiency, priority handles
+  fairness.
+- macOS background QoS is priority-band time-sharing on the efficiency cores, not
+  idle-only.
 
 ## Architecture
 
 A `bgrt` library crate plus a `bgrt-bench` measurement binary.
 
-- `qos` — `QosClass` (`#[non_exhaustive]`; see the README's stability section).
-  `backend/` does `cfg`-gated dispatch of `apply(QosClass)` to `macos`
-  (`pthread_set_qos_class_self_np`), `linux` (`setpriority` + `backend/ioprio.rs`),
-  `windows` (background mode + `SetThreadInformation` EcoQoS + `SetThreadPriority`
-  + memory-priority restore), with a no-op fallback. `backend/uclamp.rs` adds the
-  opt-in Linux frequency clamp; it is a no-op elsewhere.
-- `runtime` (feature `tokio`, default on) — `RuntimeBuilder` → `Runtime`, wrapping
-  a multi-thread tokio runtime whose `on_thread_start` applies the class to **every**
-  runtime thread (workers + blocking pool). `current_thread(true)` selects tokio's
-  current-thread scheduler instead — see below.
-- `rayon_pool` (feature `rayon`, opt-in) — `RayonBuilder` → `RayonPool`, wrapping
-  `rayon::ThreadPool` with a `start_handler` applying QoS to every rayon thread.
-  `RayonPool` derefs to `rayon::ThreadPool`; `pool.install(|| …)` routes all
-  `par_iter`/`join`/`scope` work through the quiet threads.
-- `thread` — `spawn_thread` / `ThreadBuilder` for the non-async, non-rayon path.
-  Available with no feature flags.
-- `topology` — efficiency-core detection (Linux sysfs `cpu_capacity`, Windows
-  `GetSystemCpuSetInformation`) + Linux-only affinity.
-- `telemetry` (feature `telemetry`, opt-in) — measurement primitives for the harness.
+### Modules
+
+- `qos` — `QosClass`, marked `#[non_exhaustive]`; see the README's stability
+  section. `backend/` dispatches `apply(QosClass)` per OS: `macos`
+  (`pthread_set_qos_class_self_np`), `linux` (`setpriority` plus
+  `backend/ioprio.rs`), `windows` (background mode, `SetThreadInformation` for
+  EcoQoS, `SetThreadPriority`, and the memory-priority restore), with a no-op
+  fallback elsewhere. `backend/uclamp.rs` adds the optional Linux frequency
+  clamp and does nothing on other platforms.
+- `runtime` (feature `tokio`, on by default) — `RuntimeBuilder` builds a
+  `Runtime` around a multi-thread tokio runtime whose `on_thread_start` applies
+  the class to every runtime thread, workers and blocking pool alike.
+  `current_thread(true)` selects tokio's current-thread scheduler instead; see
+  below.
+- `rayon_pool` (feature `rayon`, opt-in) — `RayonBuilder` builds a `RayonPool`
+  around `rayon::ThreadPool`, with a `start_handler` that classifies every rayon
+  thread. `RayonPool` derefs to `rayon::ThreadPool`, and `pool.install(|| …)`
+  routes `par_iter`, `join`, and `scope` work through the low-priority threads.
+- `thread` — `spawn_thread` and `ThreadBuilder`, for code that is neither async
+  nor rayon. Available with no feature flags.
+- `topology` — efficiency-core detection (Linux sysfs `cpu_capacity` and the
+  hybrid PMUs, Windows `GetSystemCpuSetInformation`) plus Linux-only affinity.
+- `telemetry` (feature `telemetry`, opt-in) — measurement primitives for the
+  harness.
+
+### The shape of the API
+
+Three builders share one classification path. They are parallel on purpose: each
+exposes the same trio of knobs (`qos`, `pin_efficiency_cores`,
+`clamp_frequency`) and resolves them the same way, so learning one is learning
+all three. A new knob is added to all three, or the asymmetry gets explained.
+
+Each box below lists only what makes that builder different. The shared trio is
+stated once, in the note; printing it three times would say one thing three times
+and bury the part that matters, which is the three edges meeting at `classify`.
+
+```mermaid
+classDiagram
+    direction LR
+
+    class RuntimeBuilder {
+        +worker_threads(usize)
+        +current_thread(bool)
+        +build() Result~Runtime~
+    }
+
+    class RayonBuilder {
+        +num_threads(usize)
+        +build() Result~RayonPool~
+    }
+
+    class ThreadBuilder {
+        +stack_size(usize)
+        +spawn(f) Result~JoinHandle~
+    }
+
+    class Runtime {
+        +spawn(future) JoinHandle
+        +spawn_blocking(f) JoinHandle
+        +block_on(future)
+    }
+
+    class RayonPool {
+        +install(op)
+    }
+
+    class classify {
+        <<internal>>
+    }
+
+    RuntimeBuilder --> Runtime : builds
+    RayonBuilder --> RayonPool : builds
+
+    RuntimeBuilder ..> classify : on_thread_start
+    RayonBuilder ..> classify : start_handler
+    ThreadBuilder ..> classify : top of thread body
+
+    note "all three also expose qos() / pin_efficiency_cores() / clamp_frequency()"
+```
+
+`classify` is the one call site for the three per-thread operations, in order:
+`backend::apply(class)` always, then `topology::pin_current_thread` and
+`backend::uclamp::clamp_current_thread` if those Linux-only, off-by-default knobs
+were set. One function with three callers is what keeps the builders in step.
+
+The diagram leaves out two things worth knowing: `RayonPool` derefs to
+`rayon::ThreadPool`, so the whole rayon API is reachable through it, and
+`spawn_thread(class, f)` is a shortcut past `ThreadBuilder` for the case with no
+knobs to set.
+
+### When classification happens, and why it has to be then
+
+A thread is classified by whoever creates it, at the moment it starts — never
+afterwards, and never from outside. That single property shapes the rest of the
+design.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor App as Calling code
+    participant B as RuntimeBuilder
+    participant T as tokio runtime
+    participant W as Worker thread
+    participant OS as OS backend
+
+    App->>B: qos(Background).build()
+    Note over B: E-cores looked up once,<br/>on the spawning thread
+    B->>T: on_thread_start(hook)
+    T-->>W: spawn worker
+    activate W
+    W->>OS: classify(Background, e_cores, clamp)
+    OS-->>W: set_qos_class_self / setpriority+ioprio / background mode
+    Note over W: classified before it runs<br/>a single task
+    App->>T: spawn(async task)
+    T->>W: poll task
+    W-->>App: JoinHandle
+    deactivate W
+```
+
+Two things follow from that sequence:
+
+- **The thread-start hook is where the work happens.** `bgrt` is a thin layer;
+  what it provides is that the classification call reaches every thread the
+  executor owns, tokio's blocking pool included, before any task runs on it.
+- **Threads `bgrt` did not create are out of reach.** A worker can only classify
+  itself, since `pthread_set_qos_class_self_np` and
+  `THREAD_MODE_BACKGROUND_BEGIN` both act on the calling thread only. No step
+  could be added to the diagram later to catch a library's own pool. See the
+  inheritance entry under [Findings](#findings-worth-remembering).
 
 ### The two-runtime pattern
 
-"Run some work normally, other work quietly" is expressed as **which executor you
-spawn onto**, not a mutable per-task flag: keep a `Default`-class `Runtime` and a
-`Background`-class `Runtime` in the same process and `spawn` onto the right one.
-This is the idiomatic shape and it sidesteps Linux's one-way `nice` (a thread
-can't raise its own priority back unprivileged) by classifying each worker once
-at creation.
+Running some work normally and other work at low priority is a matter of which
+executor the work is spawned onto, rather than a flag flipped per task: keep a
+`Default`-class `Runtime` and a `Background`-class one in the same process, and
+spawn onto whichever fits. That shape also avoids Linux's one-way `nice` — an
+unprivileged thread cannot raise its own priority again — by classifying each
+worker once, at creation.
 
 ### The current-thread runtime owns its driver thread
 
 `RuntimeBuilder::current_thread(true)` gives single-threaded task semantics, but
-**not** by driving tasks on the caller's thread the way tokio's current-thread
-runtime does. `bgrt` spawns one OS thread (via `ThreadBuilder`, so it is
-classified like every other `bgrt` thread), builds the current-thread runtime
-*there*, and parks it in `Runtime::block_on` for the runtime's lifetime.
+it does not drive tasks on the caller's thread the way tokio's current-thread
+runtime does. `bgrt` spawns one OS thread through `ThreadBuilder`, so it is
+classified like any other `bgrt` thread, builds the current-thread runtime there,
+and parks it in `Runtime::block_on` for the runtime's lifetime.
 
-The indirection exists because the obvious implementation is unsound for this
-crate, in two independent ways:
+That indirection exists because the obvious implementation is unsound here, in
+two separate ways.
 
-1. **The hook doesn't fire for the driver.** On a current-thread runtime,
+1. **The hook does not fire for the driver.** On a current-thread runtime,
    `on_thread_start` fires only for blocking-pool threads. Measured: the async
-   task observed `QOS_CLASS_DEFAULT` while a `spawn_blocking` closure on the same
-   runtime observed `QOS_CLASS_BACKGROUND`. The async work — the part users care
-   about — would run entirely unclassified.
-2. **Classifying the caller instead is not an option.** It is a thread `bgrt`
-   does not own, and on Linux an unprivileged thread can lower its niceness but
-   never raise it back, so `bgrt` would permanently deprioritize somebody else's
-   thread. This is the same one-way-`nice` constraint that motivates the
-   two-runtime pattern above.
+   task saw `QOS_CLASS_DEFAULT` while a `spawn_blocking` closure on the same
+   runtime saw `QOS_CLASS_BACKGROUND`. The async work — the part that matters —
+   would run unclassified.
+2. **Classifying the caller instead is not an option.** That thread belongs to
+   someone else, and on Linux an unprivileged thread can lower its niceness but
+   never raise it again, so `bgrt` would permanently deprioritize a thread it does
+   not own. It is the same constraint behind the two-runtime pattern above.
 
-Owning the thread resolves both. The costs are a shutdown path that must cross a
-thread boundary (a `oneshot` carrying the desired teardown mode, so all three
-tokio shutdown behaviours survive) and a `block_on` that goes through
-`Handle::block_on` — sound only because the driver thread keeps the I/O and timer
-drivers running, which a bare `Handle::block_on` on a current-thread runtime
-cannot do for itself.
+Owning the thread solves both. The costs are a shutdown path that crosses a
+thread boundary — a `oneshot` carrying the teardown mode, so all three tokio
+shutdown behaviours survive — and a `block_on` that goes through
+`Handle::block_on`, which is only sound because the driver thread keeps the I/O
+and timer drivers running.
 
-**It is not the default, and mostly should not be used.** `worker_threads(1)`
-costs the same single thread (measured: both modes are `+1`) without the hazard
-that one blocking task stalls every other task. Reach for `current_thread` only
-when single-threaded task semantics are actually wanted.
+This mode is not the default and is rarely the right choice. `worker_threads(1)`
+costs the same single thread — both modes measure as +1 — without the hazard that
+one blocking task stalls every other task. `current_thread` is for cases that
+genuinely need single-threaded task semantics.
 
 ### Efficiency-core detection vs. pinning
 
-These are deliberately separate concerns, and they have different platform
-support.
+These are separate concerns with different platform support.
 
-**Detection** answers "which CPUs are the little ones" and is used by telemetry
-to label samples. Linux reads sysfs `cpu_capacity`; Windows reads
-`EfficiencyClass` from `GetSystemCpuSetInformation`. Both scales are "higher is
-faster", so both reduce to the same pure function — the CPUs at the minimum
-value, with an all-equal machine reported as homogeneous (empty set) rather than
-as "everything is an E-core". Keeping that decision in one testable function is
-what lets it be verified on a machine with neither topology. macOS has no
+Detection answers which CPUs are the small ones, and telemetry uses it to label
+samples. Linux reads sysfs `cpu_capacity`; Windows reads `EfficiencyClass` from
+`GetSystemCpuSetInformation`. Both scales run higher-is-faster, so both reduce to
+the same pure function: take the CPUs at the minimum value, and report an
+all-equal machine as homogeneous — an empty set — rather than as a machine where
+every core is an efficiency core. Keeping that decision in one testable function
+is what allows it to be checked on a machine with neither topology. macOS has no
 unprivileged equivalent, so detection returns empty there.
 
-**Pinning** is Linux only. `pin_efficiency_cores(true)` adds `sched_setaffinity`
-to the detected E-core set; it is **opt-in and off by default**, because pinning
-is a hard restriction that hurts when the E-cores are saturated. It stays a no-op
-on macOS and Windows *even now that Windows detection works*: QoS and EcoQoS
-already place work on efficient cores, and a hard affinity mask would fight the
-scheduler's own hybrid placement rather than assist it. Knowing which cores are
-efficient is not a reason to start overriding an OS that is already doing the
-job.
+Pinning is Linux only. `pin_efficiency_cores(true)` adds `sched_setaffinity` over
+the detected set. It is off by default because pinning is a hard restriction that
+hurts once the efficiency cores are saturated. It stays a no-op on macOS and
+Windows even though Windows detection works, because QoS and EcoQoS already place
+work on efficient cores, and a hard affinity mask would fight the scheduler's own
+hybrid placement rather than help it. Knowing which cores are efficient is not a
+reason to override an OS that is already doing the job.
 
-## Measurement (telemetry + harness)
+#### Detection on x86 needs a second source
 
-The harness compares executors on the same CPU-bound workload. Design choices:
-- **Throughput is the primary signal.** Runs are duration-bounded and the workload
-  self-counts work units, so a quieter executor visibly completes less work —
-  measurable **unprivileged on every platform**, including macOS.
+`cpu_capacity` appears not to exist on x86 at all. It arrived in 2016 as an
+arm and arm64 attribute (`arch_topology.c`, `CONFIG_GENERIC_ARCH_TOPOLOGY`);
+Intel proposed a different interface in 2020 rather than adopting it; and while
+`intel_pstate` has fed asymmetric capacity to the scheduler since 2024, it does
+so through an x86-specific per-CPU variable rather than the generic topology code
+that publishes the sysfs file.
+
+So for a while, `pin_efficiency_cores(true)` was almost certainly a silent no-op
+on every Intel hybrid CPU. That is the failure this project worries about most,
+because it looks exactly like the correct no-op on a homogeneous machine. Nothing
+in a test run tells the two apart.
+
+The fix was a second source: the hybrid perf PMUs. The kernel registers
+`cpu_core` and `cpu_atom` PMUs on hybrid x86, each with a `cpus` file; on an
+i9-12900K, `cpu_atom/cpus` reads `16-23`. It needs no privileges, it names the
+efficiency cores outright rather than requiring a minimum-wins guess, and it is
+absent on non-hybrid machines, so the homogeneous case still yields empty.
+`efficiency_cores()` tries `cpu_capacity` first and then the PMU.
+
+AMD hybrid parts are out of scope on purpose. Zen 4c and Zen 5c "dense" cores use
+the same ISA and microarchitecture as their siblings, differing in clock ceiling
+and cache, so they share a PMU and there is no `cpu_atom` equivalent. The kernel
+does know the core type (CPUID `0x80000026`, `X86_FEATURE_AMD_HTR_CORES`) but
+exposes it to userspace only through debugfs (`/sys/kernel/debug/x86/topo/`),
+which is root-only and something this library will not require. Detection returns
+empty, which disables pinning rather than pinning to a wrong set. Worth revisiting
+if that core type ever gains an interface outside debugfs; the Zen 6 low-power
+core work suggests pressure is building.
+
+Core type is deliberately not inferred from `cpufreq/cpuinfo_max_freq`. Per-core
+boost binning and ITMT favoured cores make genuinely homogeneous CPUs report
+different maximums, so a minimum-wins rule over that field would mistake a binned
+Threadripper for a hybrid and confine background work to one arbitrary core.
+
+Both sysfs paths are still unverified on real hardware. The cpulist parser is
+unit-tested against published 12900K values and against malformed input, so the
+decision is covered off-hardware, but neither the `cpu_capacity` read on arm64 nor
+the PMU read on x86 has ever run against a non-empty set. See
+[`BENCHMARKS.md`](BENCHMARKS.md#data-points-still-wanted), rows 1 and 4.
+
+## Measurement (telemetry and harness)
+
+The harness compares executors on the same workload.
+
+- **Throughput is the main signal.** Runs are duration-bounded and the workload
+  counts its own work units, so a lower-priority executor visibly finishes less.
+  It needs no privileges on any platform, macOS included.
 - **Self-sampling** attributes core placement to the worker actually running.
-- **Graceful degradation:** any signal the OS/privilege can't provide is reported
-  as `n/a`/`None`, never an error.
+- **Missing signals degrade.** Anything the OS or the privilege level cannot
+  provide is reported as `n/a` or `None` rather than as an error.
 
 Per-signal availability is tabulated in
-[the README](../README.md#whats-measurable-per-platform) and in the `telemetry`
-module docs; it is not repeated here.
+[`BENCHMARKS.md`](BENCHMARKS.md#what-is-measurable-per-platform) and in the
+`telemetry` module docs.
 
 ### Measuring the disk half
 
-The harness measured CPU only until 2026-07-26 — a gap in the *evidence*, not the
-implementation, but one that left the "CPU *and* disk" claim resting on
-documentation. `--workload io` closes it. Four decisions shaped it, each of which
-would have produced a misleading benchmark if taken the other way:
+Until 2026-07-26 the harness measured CPU only. That was a gap in the evidence
+rather than in the implementation, but it left the "CPU and disk" claim resting
+on documentation. `--workload io` closes it. Four decisions shaped it, and each
+of them, taken the other way, would have produced a misleading benchmark.
 
-- **Contention, not solo throughput.** I/O priority is a mechanism for deciding
-  *who waits*; with nothing to wait behind, all three platforms run low-priority
-  reads at close to full speed. A benchmark of one executor against an idle
-  device would have produced four near-identical rows and read as "the I/O
-  mapping does nothing". So each executor runs alone *and* against plain
-  unclassified threads, and the headline is what the **foreground** keeps
-  (`fg_prot%`) — the thing a user actually cares about.
-- **Cache bypass, or say so.** Reads that hit the page cache never reach the
-  block layer, where the class applies; they measure `memcpy`. Hence `O_DIRECT` /
-  `F_NOCACHE` / `FILE_FLAG_NO_BUFFERING`, plus 4 KiB-aligned buffers and offsets.
-  Where a filesystem refuses (tmpfs rejects `O_DIRECT`), the run is labelled
-  `buffered` and warns rather than publishing cache numbers as disk numbers —
-  the same "inert configurations are reported, not hidden" rule as `uclamp` and
-  the I/O scheduler.
-- **Reads, not writes.** Buffered writes are issued to the device by a flusher
-  thread, so their priority is the *flusher's*, not the classified thread's.
-  Measuring writes would have attributed I/O to a thread that didn't issue it.
-- **Warm up by reading, never by sleeping.** The first design had workers sleep
-  until a shared start instant. On macOS that silently broke the very class being
+- **Contention rather than solo throughput.** I/O priority decides who waits.
+  With nothing to wait behind, all three platforms run low-priority reads at close
+  to full speed, so a benchmark of one executor against an idle device would have
+  produced four near-identical rows and read as though the mapping did nothing.
+  Each executor now runs alone and again against plain unclassified threads, and
+  the reported number is what the foreground keeps.
+- **Bypass the cache, or say so.** Reads served from the page cache never reach
+  the block layer, where the class applies; they measure `memcpy`. Hence
+  `O_DIRECT`, `F_NOCACHE`, or `FILE_FLAG_NO_BUFFERING`, with 4 KiB-aligned buffers
+  and offsets. Where a filesystem refuses — tmpfs rejects `O_DIRECT` — the run is
+  labelled `buffered` and warns, rather than passing cache numbers off as disk
+  numbers. Same rule as `uclamp` and the I/O scheduler: configurations where a
+  knob does nothing get reported, not hidden.
+- **Reads rather than writes.** Buffered writes reach the device from a flusher
+  thread, so their priority is the flusher's rather than the classified thread's.
+  Measuring writes would have credited I/O to a thread that never issued it.
+- **Warm up by reading, never by sleeping.** The first version had workers sleep
+  until a shared start instant. On macOS that silently broke the class being
   measured: timer deferral for `QOS_CLASS_BACKGROUND` threads meant a background
-  reader woke *after* its window closed and recorded zero reads. Workers now read
-  (uncounted) through the warm-up, which keeps them runnable and also matches the
-  real scenario — a background job already in flight when foreground work
-  arrives.
+  reader woke after its window had closed and recorded nothing. Workers now read
+  through the warm-up without counting it, which keeps them runnable and matches
+  the real case anyway — a background job already running when foreground work
+  shows up.
 
-**What it found.** On an M1, `Background` drops from ~1000 MiB/s solo to ~8 MiB/s
-against a foreground reader, leaving that foreground at 99.6% of its uncontended
-baseline where a `Default`-class competitor leaves it 76.8%. Slow but not
-stopped, which is the weighted-fair requirement made visible. Two things were
-genuinely surprising and are recorded in [`BENCHMARKS.md`](BENCHMARKS.md):
-`Utility` throttles nearly as hard as `Background` on macOS (Apple's mapping, not
-ours — and unlike the CPU axis, where `Utility` tracks `Default`), and an
-unsaturated device makes `Default` look just as polite as `Background`, so the
-harness detects that case and says so rather than letting the reader draw a
-conclusion from it.
+What it found: on an M1, `Background` drops from about 1000 MiB/s alone to about
+8 MiB/s against a foreground reader, and leaves that reader 99.6% of its
+uncontended throughput where a `Default`-class competitor leaves it 76.8%. Slow
+but not stopped, which is the weighted-fair rule made visible. Two results were
+surprising and are recorded in [`BENCHMARKS.md`](BENCHMARKS.md): `Utility`
+throttles nearly as hard as `Background` on macOS, which is Apple's mapping
+rather than a choice here and unlike the CPU side where `Utility` tracks
+`Default`; and an unsaturated device makes `Default` look every bit as polite as
+`Background`, so the harness detects that case and says so rather than leaving a
+reader to draw the wrong conclusion.
 
 ## Privileges
 
-The **library never needs privileges** — it only lowers its own threads. Only the
-*measurement harness* may need elevation: macOS `powermetrics` (sudo) for
-frequency/power/residency, and Linux RAPL energy (often root since CVE-2020-8694).
+The library never needs privileges, since it only lowers its own threads. Only
+the measurement harness may need elevation: `powermetrics` on macOS for
+frequency, power, and residency, and Linux RAPL energy, which has usually
+required root since CVE-2020-8694.
 
 ## Scope: CPU and I/O now, GPU probably never
 
-`bgrt` classifies **CPU and block-I/O** work. The two obvious "what about…"
-questions ended with different answers, recorded here so they don't get
-re-litigated — and, for the GPU one, so that the conditions under which the
-answer *should* be revisited are written down rather than left to memory.
+`bgrt` classifies CPU and block-I/O work. The two obvious "what about…" questions
+ended differently, and both are recorded here so they do not get re-argued from
+scratch. For the GPU one, the conditions that should reopen it are written down
+rather than left to memory.
 
-### I/O priority — in scope; a class covers disk as well as CPU
+### I/O priority — in scope, and a class covers disk as well as CPU
 
-A `QosClass` governs a thread's *resource* demands, not only its CPU demands.
-This was very nearly deferred to 1.1 as demand-gated, and two findings changed
-the decision.
+A `QosClass` governs a thread's resource demands rather than only its CPU
+demands. This was close to being deferred to 1.1 and gated on demand; two
+findings changed that.
 
-**Finding 1: two of three platforms already did it.** The feature was mostly
-already present, through mechanisms the crate was using for other reasons:
+The first is that two of the three platforms already did it, through mechanisms
+the crate was using for other reasons:
 
-| | I/O priority *at the time* | via |
+| | I/O priority at the time | How |
 |---|---|---|
-| macOS | already throttled | `QOS_CLASS_BACKGROUND` implies disk-I/O throttling — one call, both axes |
-| Linux | probably already correct | with no explicit I/O priority the kernel derives a best-effort level from niceness, `(nice + 20) / 5` → `nice(19)` = level 7, `nice(10)` = level 6 |
-| Windows | **the one real gap** | EcoQoS and thread priority don't touch I/O priority |
+| macOS | already throttled | `QOS_CLASS_BACKGROUND` implies disk-I/O throttling — one call covers both axes |
+| Linux | probably already right | with no explicit I/O priority, the kernel derives a best-effort level from niceness: `(nice + 20) / 5`, so `nice(19)` gives level 7 and `nice(10)` level 6 |
+| Windows | the real gap | EcoQoS and thread priority do not touch I/O priority |
 
-That derivation lands on exactly the mapping we would have chosen by hand, which
-made "add I/O priority" one platform's gap plus a documentation commitment rather
-than a three-platform feature.
+That derivation lands on the same mapping anyone would have picked by hand, which
+turned "add I/O priority" into one platform's gap plus a documentation
+commitment, rather than a three-platform feature.
 
-**Finding 2: it is a semantic change, so deferring it is the risky option.** If
-1.0 had shipped saying "`QosClass` is a CPU knob" and 1.1 then said "it also
-governs I/O", that would be a silent behaviour change for existing users —
+The second is that this is a change of meaning, so deferring it was the riskier
+option. Shipping 1.0 saying `QosClass` is a CPU knob and then saying in 1.1 that
+it also governs I/O would be a silent behaviour change for existing users —
 technically not a semver break, which makes it worse rather than better.
-Committing the meaning up front costs nothing (it already described macOS and
-probably Linux) and turns the eventual Windows change into a move *toward*
+Committing to the meaning up front cost nothing, since it already described macOS
+and probably Linux, and it turned the eventual Windows change into a move toward
 documented behaviour.
 
-**All three platforms now ship it.** Linux sets I/O priority explicitly
-(`backend/ioprio.rs`) rather than relying on the nice-derived value; Windows —
-the one real gap at the time — was closed with background processing mode, as
-described below. macOS needed no new call.
+All three platforms now have it. Linux sets I/O priority explicitly through
+`backend/ioprio.rs` rather than relying on the nice-derived value. Windows, the
+real gap at the time, was closed with background processing mode. macOS needed no
+new call.
 
-**Best-effort, never `IOPRIO_CLASS_IDLE`.** Idle-class I/O only gets the disk
-when nothing else wants it — the I/O equivalent of `SCHED_IDLE`, which this
-project rejects for CPU because quiet work must still crawl forward. Best-effort
-level 7 is the weighted-fair choice, exactly parallel to `nice(19)`.
+Best-effort, never `IOPRIO_CLASS_IDLE`. Idle-class I/O only gets the disk when
+nothing else wants it, which is the I/O equivalent of `SCHED_IDLE` — rejected
+here for CPU because low-priority work has to keep crawling forward.
+Best-effort level 7 is the weighted-fair choice, matching `nice(19)`.
 
-**Explicit, even though `nice` probably implies it.** One syscall buys
-independence from a kernel-internal derivation, intent visible in `strace`, and a
-value directly assertable via `ioprio_get` in tests — this project's convention
-is to measure rather than assume, and the implicit version cannot be asserted.
+The call is made explicitly even though `nice` probably implies it. One syscall
+buys independence from a kernel-internal derivation, intent that is visible in
+`strace`, and a value that tests can read back with `ioprio_get`. The convention
+here is to measure rather than assume, and the implicit version cannot be
+asserted.
 
-**Inert on some configurations, like `uclamp`.** Whether the priority is honoured
-is the I/O scheduler's business: BFQ fully, `mq-deadline` since 5.18, `none` — a
-common NVMe default — not at all. Documented rather than hidden.
+Whether it does anything depends on the I/O scheduler: BFQ honours it fully,
+`mq-deadline` since 5.18, and `none` — a common NVMe default — not at all. Same
+shape of caveat as `uclamp` needing `schedutil`, and documented the same way.
 
-**Windows, resolved by research rather than hardware.** The gap is now closed
-with `SetThreadPriority(THREAD_MODE_BACKGROUND_BEGIN)` for `Background`. Three
-questions had been blocking it, and all three turned out to be answerable from
-documentation and from what Chromium ships:
+#### Windows, settled by reading rather than by hardware
 
-1. *Does it compose with the existing EcoQoS call?* **Yes** — Chromium applies
+The gap closed with `SetThreadPriority(THREAD_MODE_BACKGROUND_BEGIN)` for
+`Background`. Three questions had been holding it up, and all three turned out to
+be answerable from documentation and from what Chromium ships.
+
+1. *Does it compose with the existing EcoQoS call?* Yes. Chromium applies
    `THREAD_MODE_BACKGROUND_BEGIN` and `THREAD_POWER_THROTTLING_EXECUTION_SPEED`
-   to the same threads. They are independent mechanisms.
-2. *Is it still weighted-fair — does it starve?* Microsoft documents that such a
-   thread "may not be scheduled promptly, but it will never be starved". That
-   satisfies the hard requirement, but note the hedge: never-starved is weaker
-   than Linux's proportional share, delivered by periodically boosting a thread
-   denied the CPU for too long. Poor throughput under sustained foreground load
-   is expected and intended.
-3. *Does the begin/end pairing matter?* Only in that Windows reports
-   "already in that state" as an **error** — `ERROR_THREAD_MODE_ALREADY_BACKGROUND`
-   / `ERROR_THREAD_MODE_NOT_BACKGROUND`. Since `apply` may legitimately run more
-   than once on a thread, both codes are swallowed; that is what makes `apply`
-   idempotent on Windows. Thread exit cleans up, so no explicit `END` is needed.
+   to the same threads; they are independent mechanisms.
+2. *Is it still weighted-fair, or does it starve?* Microsoft documents that such
+   a thread "may not be scheduled promptly, but it will never be starved". That
+   meets the requirement, with a hedge worth noting: never-starved is weaker than
+   Linux's proportional share, and Windows delivers it by periodically boosting a
+   thread that has been denied the CPU for too long. Poor throughput under
+   sustained foreground load is expected.
+3. *Does the begin/end pairing matter?* Only in that Windows reports "already in
+   that state" as an error — `ERROR_THREAD_MODE_ALREADY_BACKGROUND` and
+   `ERROR_THREAD_MODE_NOT_BACKGROUND`. Since `apply` may legitimately run more
+   than once on a thread, both are swallowed, which is what makes `apply`
+   idempotent on Windows. Thread exit cleans up, so no explicit end call is
+   needed.
 
-**Never the process-wide sibling.** `PROCESS_MODE_BACKGROUND_BEGIN` carries an
-undocumented hard 32 MiB cap on the process working set, measured making real
-programs 250–800× slower. Mozilla investigated it and closed the idea WONTFIX;
-Chromium dropped it; both recommended the per-thread flag instead. Because `bgrt`
-classifies threads and not processes, the dangerous variant is not merely avoided
-— it is unreachable by design. This distinction is the whole reason the Windows
-half looked riskier than it was: nearly every horror story about "Windows
+The process-wide sibling, `PROCESS_MODE_BACKGROUND_BEGIN`, is never used. It
+carries an undocumented hard 32 MiB cap on the process working set, measured
+making real programs 250 to 800 times slower. Mozilla investigated it and closed
+the idea WONTFIX, Chromium dropped it, and both recommended the per-thread flag
+instead. Because `bgrt` classifies threads rather than processes, the dangerous
+variant is unreachable rather than merely avoided. That distinction is why the
+Windows half looked riskier than it was: nearly every horror story about "Windows
 background mode" is about the process API.
 
-**Memory priority is deliberately undone.** Background mode also drops the thread
-to `MEMORY_PRIORITY_VERY_LOW`, so its pages are trimmed first. That is a latency
-hazard rather than an energy win — trimmed pages fault back in, costing the very
-disk I/O the class is trying to avoid — so `bgrt` puts it back right afterwards.
-Chromium does the same.
+Memory priority is put back afterwards. Background mode also drops the thread to
+`MEMORY_PRIORITY_VERY_LOW`, so its pages are trimmed first — a latency hazard
+rather than an energy saving, since trimmed pages fault back in at the cost of the
+very disk I/O the class is trying to avoid. Chromium does the same.
 
-*Put back*, not *set to normal.* The first implementation wrote
+Put back, though, rather than set to normal. The first version wrote
 `MEMORY_PRIORITY_NORMAL` unconditionally, on the reading that normal is the
-documented system default for every thread. It is — but only as a *default*: a
-process can lower its own with `SetProcessInformation(ProcessMemoryPriority)`,
-and threads inherit that lowered value at creation. GitHub Actions
-`windows-latest` runners turn out to do exactly this, starting threads at
-`MEMORY_PRIORITY_LOW`; the CI assertion that a fresh thread reads normal is what
-caught it. On such a process the old code would have *raised* a `Background`
-thread's memory priority above what its process asked for — a classifier whose
-entire contract is that it only ever lowers. So `apply` now samples the thread's
-memory priority before entering the mode and restores that value. The test asserts
-against the sampled baseline rather than a constant, which is also what makes it
-capable of catching the bug: an assertion of "equals normal" passes for a backend
-that hard-codes normal, by construction.
+documented default for every thread. It is — but only as a default. A process can
+lower its own with `SetProcessInformation(ProcessMemoryPriority)`, and threads
+inherit the lowered value at creation. GitHub Actions `windows-latest` runners do
+exactly that, starting threads at `MEMORY_PRIORITY_LOW`, and the CI assertion that
+a fresh thread reads normal is what caught it. On such a process the old code
+would have raised a `Background` thread's memory priority above what its process
+asked for, from a classifier whose whole contract is that it only lowers. `apply`
+now samples the thread's memory priority before entering the mode and restores
+that value. The test asserts against the sampled baseline rather than a constant,
+which is also what makes it able to catch the bug: "equals normal" passes for a
+backend that hard-codes normal, by construction.
 
-**Unmeasured, and labelled as such.** CI executes the behavioural tests on
-`windows-latest` (the mode is entered, memory priority is lowered by it and then
-restored, re-application is idempotent), but nobody has measured *throughput*
-under contention on real Windows hardware. Same standing as the hybrid-Linux
-pinning path: implemented, behaviour-tested, performance unverified.
+Throughput under contention on real Windows hardware is still unmeasured. CI runs
+the behavioural tests on `windows-latest` — the mode is entered, memory priority
+drops and is restored, re-application is idempotent — but performance is reasoned
+rather than observed. Same standing as the hybrid-Linux pinning path.
 
 #### Why one knob and not two
 
-`qos()` covers both axes; there is no separate `io_class()`. The reasons, in
-order of weight:
+`qos()` covers both axes; there is no separate `io_class()`. The reasons, heaviest
+first.
 
-1. **Two knobs cannot be honoured on two of three platforms.** Windows has no
-   documented thread-scope I/O-priority API — the only documented path bundles
-   CPU, I/O, and memory. (`NtSetInformationThread(ThreadIoPriority)` is
-   undocumented, so out of bounds for this crate.) macOS bundles them too. So
-   `qos(Background).io(Default)` and its inverse would be Linux-only truths. **An
+1. **Two knobs cannot be honoured on two of the three platforms.** Windows has no
+   documented thread-scope I/O-priority API; the only documented path bundles CPU,
+   I/O, and memory. (`NtSetInformationThread(ThreadIoPriority)` is undocumented,
+   so it is out of bounds here.) macOS bundles them too. So
+   `qos(Background).io(Default)` and its inverse would be true on Linux only. An
    API that cannot honour its own combinations is worse than a coarser one that
-   always does what it says.**
-2. **macOS already behaved this way**, so the bundled semantics are documentation
-   catching up with shipped behaviour rather than a new invention. Had macOS
-   treated the axes independently, a split API would have been defensible; because
-   it bundles them, a split API would have been contradicted by the reference
-   platform on day one.
+   always means what it says.
+2. **macOS already behaved this way**, so the bundled meaning is documentation
+   catching up with shipped behaviour rather than an invention. Had macOS treated
+   the axes separately, a split API would have been defensible; because it bundles
+   them, a split API would have been contradicted by the reference platform on day
+   one.
 3. **It keeps the builder trio intact** — no fourth knob across `RuntimeBuilder`,
-   `RayonBuilder`, and `ThreadBuilder`. Windows reinforces this after the fact:
-   its I/O lever is all-or-nothing, so even `Utility` cannot get quiet I/O
-   without also surrendering CPU priority. `Utility` therefore gets no I/O
-   reduction there — a coverage gap that is honest, where a split API would have
-   been a lie.
-4. **The escape hatch stays additive.** If split control is ever genuinely needed,
-   `io_class(Option<QosClass>)` can be added as an *override* documented "no
-   effect on Windows" — exactly the mould of `pin_efficiency_cores` and
-   `clamp_frequency`, both already platform-specific opt-ins. Nothing here
+   `RayonBuilder`, and `ThreadBuilder`. Windows reinforces this: its I/O lever is
+   all-or-nothing, so even `Utility` cannot get low-priority I/O without giving
+   up CPU priority as well. `Utility` therefore gets no I/O reduction there,
+   which is an honest gap where a split API would have been a lie.
+4. **The escape hatch stays open.** If split control is ever genuinely needed,
+   `io_class(Option<QosClass>)` can be added as an override documented as having
+   no effect on Windows — the same shape as `pin_efficiency_cores` and
+   `clamp_frequency`, which are already platform-specific opt-ins. Nothing here
    forecloses it.
 
-### GPU — probably never, but here's what would change that
+### GPU — probably never, and what would change that
 
-Not on the roadmap, and it would take a real shift in the platforms to get there.
-Five reasons, each sufficient on its own **as things stand today**:
+Not planned, and it would take a real shift in the platforms to get there. Five
+reasons, each sufficient on its own as things stand today.
 
-1. **There is no OS-level per-thread GPU QoS on any target platform.** The CPU
+1. **No OS-level per-thread GPU QoS exists on any target platform.** The CPU
    design rests on one primitive that macOS, Windows, and Linux all expose with
-   the same meaning. No such primitive exists for GPUs. What exists is per-API
-   and mutually incompatible: Vulkan `VK_KHR_global_priority`, CUDA stream
-   priorities, D3D12 command-queue priority, and Metal (which has no queue
-   priority API at all). There is no common concept to wrap.
-2. **Those APIs arbitrate contention; they are not energy levers.** Lowering a
-   GPU queue's priority makes your work *wait*. It does not downclock the GPU,
-   does not move work to lower-power units, and does not reduce power draw. A GPU
-   idling at high clocks while your deprioritized work waits can burn **more**
-   energy for the same result — the precise opposite of this library's goal.
+   the same meaning. Nothing like it exists for GPUs. What exists is per-API and
+   mutually incompatible: Vulkan `VK_KHR_global_priority`, CUDA stream priorities,
+   D3D12 command-queue priority, and Metal, which has no queue priority API at
+   all. There is no common concept to wrap.
+2. **Those APIs order contention; they are not energy levers.** Lowering a GPU
+   queue's priority makes the work wait. It does not downclock the GPU, move work
+   to lower-power units, or reduce power draw. A GPU idling at high clocks while
+   deprioritized work waits can burn more energy for the same result, which is the
+   opposite of the goal here.
 3. **On Windows there is no low tier to ask for.** D3D12 offers `NORMAL`, `HIGH`,
-   and `GLOBAL_REALTIME`. There is nothing *below* normal, so the central
-   operation — "ask for less" — has no expression.
-4. **The threading model doesn't transfer.** `bgrt` classifies a thread once at
-   start. GPU work is not owned by a thread; it is submitted to a queue owned by
-   a device context, and the submitting thread's class says nothing about how the
-   work executes. There is no thread to classify.
-5. **For AI workloads specifically, the real levers are a different kind of
-   thing.** Energy is saved by choosing the low-power compute unit (the Apple
-   Neural Engine via CoreML's `MLComputeUnits`, an NPU via DirectML, integrated
-   over discrete), by reducing batch size and concurrency, or by quantizing.
-   Those are model- and framework-level decisions. A thread-QoS crate is not
-   positioned to make any of them, and pretending otherwise would ship a knob
-   that looks like it saves energy without doing so.
+   and `GLOBAL_REALTIME`. There is nothing below normal, so the central operation
+   — asking for less — cannot be expressed.
+4. **The threading model does not carry over.** `bgrt` classifies a thread once at
+   start. GPU work is not owned by a thread; it is submitted to a queue owned by a
+   device context, and the submitting thread's class says nothing about how the
+   work runs. There is no thread to classify.
+5. **For AI workloads the real levers are a different kind of thing.** Energy is
+   saved by choosing the low-power compute unit (the Apple Neural Engine through
+   CoreML's `MLComputeUnits`, an NPU through DirectML, integrated over discrete),
+   by reducing batch size and concurrency, or by quantizing. Those are model- and
+   framework-level decisions. A thread-QoS crate cannot make any of them, and
+   pretending otherwise would ship a knob that looks like it saves energy without
+   doing so.
 
-GPU energy obviously matters. The point is that today the lever is not a
-scheduling hint, so it does not belong in a scheduling-hint library.
+GPU energy matters. The point is that today the lever is not a scheduling hint,
+so it does not belong in a scheduling-hint library.
 
-**What would change this.** Every objection above is contingent — four of the
-five describe what the platforms currently expose, not a principle. Concretely,
-reopen the question if any of these happen:
+Four of those five reasons describe what the platforms expose rather than a
+principle, so the question should be reopened if any of the following happens.
 
 - **An OS ships a per-thread or per-context GPU energy QoS** with the property
-  that makes the CPU design work: lowering it is unprivileged, it is set once,
-  and it means "use less power", not "go later in the queue". A Windows EcoQoS
-  for GPU contexts, or a Darwin QoS class that propagates to Metal submissions,
-  would be the shape to watch for.
-- **The graphics APIs converge on an eco tier that actually affects power** —
-  clocks, or placement onto lower-power units — rather than only arbitrating
-  contention. Vulkan's `VK_KHR_global_priority` is the nearest existing thing and
-  is explicitly *not* that; if a successor were, the calculus changes.
+  that makes the CPU design work: lowering it needs no privileges, it is set once,
+  and it means "use less power" rather than "go later in the queue". A Windows
+  EcoQoS for GPU contexts, or a Darwin QoS class that carries through to Metal
+  submissions, is the shape to watch for.
+- **The graphics APIs converge on an eco tier that affects power** — clocks, or
+  placement onto lower-power units — rather than only ordering contention.
+  Vulkan's `VK_KHR_global_priority` is the closest existing thing and is
+  explicitly not that; a successor that was would change the arithmetic.
 - **Inference runtimes expose a portable low-power mode.** CoreML's
   `MLComputeUnits`, DirectML device selection, and CUDA's knobs all express
-  something like "prefer the efficient unit", but with no common vocabulary. If a
-  cross-platform abstraction over compute-unit selection emerged, "run this model
-  quietly" would become expressible — though even then it may belong in an
-  inference wrapper rather than here.
-- **GPU work acquires a thread-like owner.** If a runtime lets a submission
-  inherit the classification of the thread that queued it, the existing model
-  would extend naturally instead of needing a parallel one.
+  something like "prefer the efficient unit", with no shared vocabulary. If a
+  cross-platform abstraction over compute-unit selection appeared, "run this model
+  at low priority" would become expressible — though even then it might belong
+  in an inference wrapper rather than here.
+- **GPU work gains a thread-like owner.** If a runtime let a submission inherit
+  the classification of the thread that queued it, the existing model would extend
+  instead of needing a parallel one.
 
 Until at least one of those is true, adding a GPU knob would mean shipping
-something that looks like an energy control and is not one. That is the actual
-objection, and it is the thing to re-test — not the conclusion.
+something that looks like an energy control and is not one. That is the objection
+to re-test, rather than the conclusion drawn from it.
 
 ## Findings worth remembering
 
-- **Linux on homogeneous CPUs: `nice(19)` is a null result without contention.**
-  On a homogeneous CPU (no `cpu_capacity` sysfs, e.g. Threadripper, Xeon), `nice`
+- **On homogeneous Linux CPUs, `nice(19)` does nothing without contention.** On a
+  machine with no `cpu_capacity` sysfs entries — a Threadripper, a Xeon — `nice`
   only deprioritizes when other threads compete for the same core. A single active
-  thread at nice 19 gets full CPU time and full clock speed — throughput, frequency,
-  and RAPL energy are indistinguishable from nice 0. Meaningful Linux results require
-  a heterogeneous (P+E) CPU (Alder Lake, Raptor Lake) — where E-core affinity via
-  `sched_setaffinity` is the real lever — or a CPU-loaded machine.
-- **`uclamp` is the homogeneous-CPU frequency lever.** Where `nice` gives the
-  cpufreq governor no input, the opt-in `clamp_frequency` (`sched_setattr` with
-  `SCHED_FLAG_UTIL_CLAMP_MAX`) caps a `Background` thread's `util_max` (~20%), so
-  `schedutil` selects a lower OPP even at 100% busy. Caveats: needs the
-  `schedutil` governor (or `intel_pstate=passive`) — fixed governors and HWP
-  bypass the util signal; needs kernel ≥ 5.8 for `SCHED_FLAG_KEEP_ALL`; and the
-  effective cap is bounded by `/proc/sys/kernel/sched_util_clamp_max`. Lowering
-  one's own `util_max` is unprivileged. It biases frequency, not CPU-time share,
-  so it composes with `nice` rather than replacing it. **Run-verified on an Intel
-  i7-2720QM (Sandy Bridge, homogeneous) with `schedutil`:** background mean clock
-  840 MHz vs 3192 (≈3.8× lower), ≈3.2× less package energy over a fixed 10 s
-  window, at ≈26% throughput.
-- **Frequency-clamping is a stay-cool lever, not a per-work efficiency win (on old
-  silicon).** In the i7-2720QM run above, dividing energy by work shows background
-  spending *slightly more* per work-unit (~88 vs ~74 µJ): at low clocks, fixed and
-  leakage power dominate, so "race to idle" is marginally more efficient for a
-  fixed batch. The win is lower *instantaneous* power (cooler, quieter, doesn't
-  steal thermal/power budget from foreground work), not a smaller battery bill per
-  unit of work. This differs from macOS efficiency-core *placement*, which does cut
-  energy ~4× per unit work — placement and frequency are distinct levers with
-  distinct economics.
-- **Linux RAPL is whole-package on workstation/server CPUs.** On a 16-core
-  Threadripper, `energy_uj` reflects the entire package (all cores + memory
-  controller + I/O die). Per-thread power attribution is not possible: variance
-  between executors (<3%) is measurement noise, not a real signal.
-- **Classification does not follow threads spawned by a classified thread —
-  except on Linux.** Measured, and the platforms invert their usual roles:
-  Linux inherits (`nice`, I/O priority, affinity and `uclamp` live in
-  `task_struct` and are copied by `clone()`), while macOS and Windows do not — a
-  child of a `QOS_CLASS_BACKGROUND` (0x09) thread reports `QOS_CLASS_DEFAULT`
-  (0x15), and Windows starts every thread at `THREAD_PRIORITY_NORMAL`.
-  - **This bounds what the crate can promise.** A `QosClass` covers the thread
-    `bgrt` created, not the work graph beneath it. Handing a `Background` thread
-    to a library that manages its own pool — RocksDB's compaction and flush
-    threads being the motivating case — leaves that pool at full priority on two
-    of three platforms, silently.
-  - **It cannot be repaired from outside.** `pthread_set_qos_class_self_np` and
-    `THREAD_MODE_BACKGROUND_BEGIN` both act only on the *calling* thread, so even
+  thread at nice 19 gets full CPU time and full clock speed, and throughput,
+  frequency, and RAPL energy are indistinguishable from nice 0. Meaningful Linux
+  results need a P+E CPU, where efficiency-core affinity is the real lever, or a
+  loaded machine.
+- **`uclamp` is the frequency lever on homogeneous CPUs.** Where `nice` gives the
+  cpufreq governor nothing to work with, the optional `clamp_frequency`
+  (`sched_setattr` with `SCHED_FLAG_UTIL_CLAMP_MAX`) caps a `Background` thread's
+  `util_max` at about 20%, so `schedutil` picks a lower operating point even at
+  100% busy. Caveats: it needs the `schedutil` governor or
+  `intel_pstate=passive`, since fixed governors and HWP bypass the util signal; it
+  needs kernel 5.8 or newer for `SCHED_FLAG_KEEP_ALL`; and the effective cap is
+  bounded by `/proc/sys/kernel/sched_util_clamp_max`. Lowering one's own
+  `util_max` needs no privileges. It biases frequency rather than CPU-time share,
+  so it composes with `nice` instead of replacing it. Verified on an Intel
+  i7-2720QM with `schedutil`: background mean clock 840 MHz against 3192, about
+  3.2 times less package energy over a fixed 10 s window, at about 26% of the
+  throughput.
+- **Frequency clamping keeps a machine cool without saving energy per unit of
+  work, at least on old silicon.** In that i7-2720QM run, dividing energy by work
+  shows background spending slightly more per work unit, about 88 µJ against 74:
+  at low clocks, fixed and leakage power dominate, so racing to idle is marginally
+  more efficient for a fixed batch. The win is lower instantaneous power — cooler,
+  quieter, not taking thermal budget from foreground work — rather than a smaller
+  battery bill per unit of work. macOS efficiency-core placement is the opposite
+  case, cutting energy about 4 times per unit of work. Different levers, different
+  economics.
+- **Linux RAPL is whole-package on workstation and server CPUs.** On a 16-core
+  Threadripper, `energy_uj` covers the entire package: all cores, memory
+  controller, and I/O die. Per-thread power attribution is not possible, and the
+  variance between executors, under 3%, is measurement noise.
+- **Classification does not follow threads spawned by a classified thread, except
+  on Linux.** Measured, and the platforms swap their usual roles. Linux inherits,
+  because `nice`, I/O priority, affinity, and `uclamp` live in `task_struct` and
+  are copied by `clone()`. macOS and Windows do not: a child of a
+  `QOS_CLASS_BACKGROUND` (0x09) thread reports `QOS_CLASS_DEFAULT` (0x15), and
+  Windows starts every thread at `THREAD_PRIORITY_NORMAL`.
+  - This bounds what the crate can promise. A `QosClass` covers the thread `bgrt`
+    created, not the work graph beneath it. Handing a `Background` thread to a
+    library that manages its own pool — RocksDB's compaction and flush threads
+    being the case that prompted this — leaves that pool at full priority on two
+    of the three platforms, with nothing to indicate it.
+  - It cannot be repaired from outside. `pthread_set_qos_class_self_np` and
+    `THREAD_MODE_BACKGROUND_BEGIN` both act only on the calling thread, so even
     enumerating a library's threads would not help. Only Linux can target another
-    task by tid. This is why the two-runtime pattern and the builders' thread
-    hooks are the load-bearing part of the design: classification has to happen
-    *at thread creation*, by whoever creates the thread.
-  - The honest guidance is therefore: prefer libraries that accept a thread
-    factory or run on a `bgrt` runtime/pool; otherwise isolate the work in its
-    own process and classify the process. Recorded in the README with the full
-    table, and asserted per-platform in CI so the table stays true.
-- **On macOS you cannot have both an explicit I/O policy and a QoS class.**
-  Setting a thread-scope disk policy with `setiopolicy_np` **permanently opts the
-  thread out of QoS**. Measured: `pthread_get_qos_class_np` drops from
-  `QOS_CLASS_BACKGROUND` (0x9) to `QOS_CLASS_UNSPECIFIED` (0x0) the moment the
-  I/O call lands, and re-applying the QoS class afterwards does *not* restore it
-  — neither ordering yields both.
-  - This was found by trying it. The motivation was good: `getiopolicy_np`
-    reports only a thread's *explicit override*, so a background-QoS thread reads
-    `IOPOL_DEFAULT` and the disk half of the class is not directly assertable on
-    macOS — the one platform where a test could run on the author's own hardware.
+    task by tid. That is why the two-runtime pattern and the builders' thread
+    hooks carry the design: classification has to happen at thread creation, by
+    whoever creates the thread.
+  - What does work, in order of preference:
+    1. **Give the library a thread hook.** Anything built on tokio or rayon is
+       already covered — hand it a `bgrt` runtime or pool and every worker,
+       blocking pool included, is classified at thread start. Some C libraries
+       expose a thread-factory callback that can call `bgrt::apply`.
+    2. **Put it in its own process** and classify the process rather than a
+       thread. It is the only approach that reliably catches threads outside the
+       caller's control. On Windows use
+       `SetPriorityClass(BELOW_NORMAL_PRIORITY_CLASS)` rather than
+       `PROCESS_MODE_BACKGROUND_BEGIN`; see the 32 MiB working-set trap above.
+    3. **Measure before assuming it matters.** If the library's own threads do a
+       small share of the work, classifying the rest may still capture most of the
+       benefit — but check, because the failure is silent.
+  - Summarised in the README under *Limitations*, and asserted per platform in CI
+    so the claim stays true.
+- **On macOS a thread cannot have both an explicit I/O policy and a QoS class.**
+  Setting a thread-scope disk policy with `setiopolicy_np` permanently opts the
+  thread out of QoS. Measured: `pthread_get_qos_class_np` drops from
+  `QOS_CLASS_BACKGROUND` (0x9) to `QOS_CLASS_UNSPECIFIED` (0x0) the moment the I/O
+  call lands, and re-applying the class afterwards does not restore it. Neither
+  ordering gives both.
+  - This was found by trying it. The motivation was sound: `getiopolicy_np`
+    reports only a thread's explicit override, so a background-QoS thread reads
+    `IOPOL_DEFAULT` and the disk half of the class cannot be asserted on macOS —
+    the one platform where the test could run on the author's own hardware.
     Setting it outright would have fixed that, mirroring why Linux calls
-    `ioprio_set` rather than trusting the nice-derived priority.
-  - **The price is the entire feature.** Losing the QoS class means losing E-core
-    confinement, the DVFS bias, and the ~12× power result that is this crate's
-    headline evidence — in exchange for a readable I/O field. Not a trade worth
-    making, so the backend deliberately never calls `setiopolicy_np`.
-  - Consequence: the macOS I/O *policy* is structurally unassertable, a weaker
-    footing than Linux (`ioprio_get`) or Windows (memory-priority side effect).
-    Recorded rather than papered over, and guarded by a regression test that
-    asserts the QoS class survives classification and the I/O override stays
+    `ioprio_set` instead of trusting the nice-derived priority.
+  - The price is the whole feature. Losing the QoS class means losing
+    efficiency-core confinement, the DVFS bias, and the 12-times power result,
+    in exchange for a readable field. Not worth it, so the backend never calls
+    `setiopolicy_np`.
+  - The macOS I/O policy therefore cannot be read back, which is weaker footing
+    than Linux (`ioprio_get`) or Windows (the memory-priority side effect). It is
+    recorded rather than papered over, and guarded by a regression test asserting
+    that the QoS class survives classification and that the I/O override stays
     unset.
-  - **Amended 2026-07-26:** the policy still can't be read back, but its *effect*
-    now is. `bgrt-bench --workload io` measures a classified reader collapsing
-    from ~1000 MiB/s to ~8 MiB/s against foreground traffic — behavioural
-    evidence, which is stronger than a readable field anyway, and the reason this
-    row moved from "rests on Apple's documentation" to "measured".
-  - It also explains *why* Darwin bundles the two axes, which is the observation
-    the whole single-`QosClass` API rests on: the QoS class **is** the I/O
-    mechanism there, not merely correlated with it.
-- **`Background` throttles disk I/O on macOS for free — which is what set the
-  I/O design.** `QOS_CLASS_BACKGROUND` is not purely a CPU hint: Darwin applies
-  I/O throttling to threads in that class, in the same call. Discovering that is
-  what turned "should I/O be a second knob?" into "it already isn't one on the
-  reference platform". Linux now matches explicitly via `ioprio_set`; Windows is
-  the remaining gap. Before that work, the same file-heavy background task was
-  measurably quieter on macOS than elsewhere through a mechanism `bgrt` never
-  asked for — an undocumented asymmetry, since closed on all three platforms
-  (Linux explicitly via `ioprio_set`, Windows via background processing mode).
-- **macOS QoS promotion / priority inversion.** A higher-QoS thread that
-  synchronously `join`s (or otherwise blocks on) a background thread *promotes it
-  off the efficiency cores*. An async `await` on a background runtime does not.
-  Practical effect: fire-and-forget background threads stay quiet, but blocking a
-  foreground thread on one can speed it up. (The harness matches the waiter's QoS
-  to measure the executor, not the join.)
-- **tokio's `on_thread_start` covers the blocking pool**, so `spawn_blocking`
-  work is classified too — verified by test. No `spawn_blocking`-side workaround.
-  **But only on the multi-thread scheduler:** on a current-thread runtime the
-  same hook fires *only* for blocking-pool threads, never for the thread driving
-  the async tasks. Hence the owned driver thread described above.
+  - Amended 2026-07-26: the policy still cannot be read back, but its effect now
+    can. `bgrt-bench --workload io` measures a classified reader collapsing from
+    about 1000 MiB/s to about 8 MiB/s against foreground traffic. Behavioural
+    evidence is stronger than a readable field anyway, which is why this moved
+    from "rests on Apple's documentation" to "measured".
+  - It also explains why Darwin bundles the two axes, which is the observation the
+    single-`QosClass` API rests on: there, the QoS class *is* the I/O mechanism
+    rather than something correlated with it.
+- **`Background` throttles disk I/O on macOS at no extra cost, which is what set
+  the I/O design.** `QOS_CLASS_BACKGROUND` is not purely a CPU hint: Darwin
+  applies I/O throttling to threads in that class, in the same call. Finding that
+  turned "should I/O be a second knob?" into "it already is not one on the
+  reference platform". Linux now matches it explicitly through `ioprio_set`, and
+  Windows through background processing mode. Before that work, the same
+  file-heavy background task was measurably gentler on the disk on macOS than
+  elsewhere, through a mechanism `bgrt` never asked for.
+- **macOS promotes a background thread that a higher-QoS thread waits on.**
+  Synchronously joining or otherwise blocking on such a thread moves it off the
+  efficiency cores, to avoid priority inversion. An async `await` on a background
+  runtime does not. So fire-and-forget background threads stay low-priority, but
+  blocking a foreground thread on one can speed it up. The harness matches the
+  waiter's QoS so that it measures the executor rather than the join.
+- **tokio's `on_thread_start` covers the blocking pool**, so `spawn_blocking` work
+  is classified too — verified by test, and no workaround is needed. That holds
+  for the multi-thread scheduler only: on a current-thread runtime the same hook
+  fires only for blocking-pool threads, never for the thread driving the async
+  tasks. Hence the owned driver thread described above.
 - **Efficiency-core pinning on Linux is unverified on real hardware.** The
-  selection logic (`topology::select_efficiency_cores`) is unit-tested against
-  hybrid and three-tier capacity layouts, but the sysfs `cpu_capacity` read and
-  `sched_setaffinity` have never executed against a non-empty core set — every
-  available Linux machine is homogeneous, where the feature correctly does
-  nothing, which is precisely the result that cannot distinguish working code
-  from silently broken code. Recorded as a caveat in the README rather than
-  papered over; treat it as untested code until run on Alder/Raptor/Meteor Lake.
-- **Frequency can be biased, not guaranteed.** Keeping work off P-cores is the
-  effective lever; E-cores can still clock up, but at far lower thermal cost.
+  selection logic is unit-tested against hybrid and three-tier capacity layouts,
+  but the sysfs read and `sched_setaffinity` have never run against a non-empty
+  core set. Every available Linux machine is homogeneous, where the feature
+  correctly does nothing — the one result that cannot tell working code from
+  silently broken code. Treat it as untested until someone runs it on Alder,
+  Raptor, or Meteor Lake.
+- **Frequency can be biased, not guaranteed.** Keeping work off the performance
+  cores is the effective lever. Efficiency cores can still clock up, but at far
+  lower thermal cost.

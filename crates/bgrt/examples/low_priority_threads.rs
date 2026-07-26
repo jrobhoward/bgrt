@@ -1,7 +1,7 @@
 //! Spawn energy-classified OS threads — the non-async path.
 //!
 //! ```text
-//! cargo run --example quiet_threads -p bgrt
+//! cargo run --example low_priority_threads -p bgrt
 //! ```
 
 use bgrt::{QosClass, ThreadBuilder, spawn_thread};

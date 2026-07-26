@@ -52,7 +52,7 @@ cargo clippy -p bgrt-bench --all-targets --target x86_64-pc-windows-msvc -- -Dwa
 # Examples
 cargo run --example background_task -p bgrt
 cargo run --example mixed_runtimes -p bgrt
-cargo run --example quiet_threads -p bgrt
+cargo run --example low_priority_threads -p bgrt
 
 # Comparison harness (sudo + --mac-power on macOS for %E/freq/power).
 # Build first, then sudo the *binary*: `sudo cargo run` rebuilds as root and may
@@ -75,12 +75,12 @@ Cargo workspace, edition 2024, `rust-version = 1.85.0`.
   - `qos` — `QosClass { Background, Utility, Default }`, the energy class applied per thread. `#[non_exhaustive]`.
   - `backend/` — per-OS dispatch (`macos.rs`, `linux.rs`, `windows.rs`), each exposing `apply(QosClass)` acting on the *current* thread. macOS = `pthread_set_qos_class_self_np` (which also throttles disk I/O, for free); Linux = `setpriority` **+ `backend/ioprio.rs`** (`ioprio_set` → best-effort 7 for `Background`, 6 for `Utility`, untouched for `Default` — best-effort, never `IOPRIO_CLASS_IDLE`, same anti-starvation rule as `nice` over `SCHED_IDLE`); Windows = `THREAD_MODE_BACKGROUND_BEGIN` background mode (the only per-thread I/O lever; `Background` only, since it's all-or-nothing and would sink `Utility`'s CPU priority too) + memory-priority restore + EcoQoS via `SetThreadInformation` + `SetThreadPriority`. **Never `PROCESS_MODE_BACKGROUND_BEGIN`** — undocumented 32 MiB working-set cap, 250–800× slowdowns; Mozilla and Chromium both rejected it. "Already in that state" errors are swallowed so `apply` stays idempotent. A no-op fallback covers other platforms. `backend/uclamp.rs` adds an opt-in Linux `sched_setattr` utilization clamp (`clamp_current_thread`): for `Background`, caps `util_max` (~20%) so the cpufreq governor picks a lower clock even on homogeneous CPUs where `nice` has no frequency effect. Best-effort (no-op on old kernels/non-schedutil governors), unprivileged (only lowers), no-op off Linux.
   - `runtime` *(feature `tokio`, on by default)* — `RuntimeBuilder` → `Runtime` wrapping a multi-thread tokio runtime; applies `QosClass` to every runtime thread (workers + blocking pool) via `on_thread_start`. `spawn` / `spawn_blocking` / `block_on` / `handle` / `qos` / `shutdown_timeout` / `shutdown_background`. `current_thread(true)` switches to tokio's current-thread scheduler, driven on **one `bgrt`-spawned, classified OS thread** — never the caller's, because `on_thread_start` fires only for the blocking pool in that mode and reclassifying a foreign thread is unsound (one-way `nice` on Linux). That mode makes `Runtime::inner` a private `MultiThread | Dedicated` enum, routes `block_on` through `Handle::block_on`, and signals teardown to the driver over a `oneshot<ShutdownMode>`. See `docs/DESIGN.md` for the rationale.
-  - `rayon_pool` *(feature `rayon`, off by default)* — `RayonBuilder` → `RayonPool` wrapping `rayon::ThreadPool`; applies `QosClass` in `start_handler`. `RayonPool` derefs to `rayon::ThreadPool`; use `pool.install(|| …)` to run `par_iter`/`join`/`scope` work on the quiet threads.
+  - `rayon_pool` *(feature `rayon`, off by default)* — `RayonBuilder` → `RayonPool` wrapping `rayon::ThreadPool`; applies `QosClass` in `start_handler`. `RayonPool` derefs to `rayon::ThreadPool`; use `pool.install(|| …)` to run `par_iter`/`join`/`scope` work on the low-priority threads.
   - `thread` — `spawn_thread` (infallible, like `std::thread::spawn`) and `ThreadBuilder` (`io::Result`, like `std::thread::Builder`); applies QoS at the top of the thread body. Available with no feature flags.
   - `topology` — private module. **Detection** (`efficiency_cores()`) works on Linux (sysfs `cpu_capacity`) *and* Windows (`GetSystemCpuSetInformation` → `EfficiencyClass`), both funnelled through the pure `select_efficiency_cores` (min value wins; all-equal ⇒ empty, i.e. homogeneous, never "all cores are E-cores"). **Pinning** (`pin_current_thread`, `sched_setaffinity`) stays Linux-only on purpose — EcoQoS already places Windows work, and a hard mask would fight it. Reached via the builders' `pin_efficiency_cores` knob and by `telemetry::sample()`.
   - `telemetry` *(feature `telemetry`, off by default)* — measurement primitives: `sample()` (cpu/core-type/freq), `energy_uj()`/`EnergyMeter`, `Aggregate`. Graceful `None`/`Unknown` where unavailable.
   - `error` — `thiserror` `Error` (`Backend`; `Runtime` gated on `tokio`; `ThreadPool` gated on `rayon`).
-  - `examples/` — `background_task`, `mixed_runtimes` (require feature `tokio`), `quiet_threads`.
+  - `examples/` — `background_task`, `mixed_runtimes` (require feature `tokio`), `low_priority_threads`.
 
 **The three builders are deliberately parallel.** `RuntimeBuilder`, `RayonBuilder`,
 and `ThreadBuilder` each expose the same trio — `qos(QosClass)`,
@@ -117,7 +117,7 @@ updating the README table they point at.
 | `Utility` | `QOS_CLASS_UTILITY` | EcoQoS + `NORMAL` | `nice(10)` + ioprio BE 6 |
 | `Default` | passthrough | clear throttling | `nice(0)`, ioprio untouched |
 
-Every `Background` mapping is weighted-fair (not run-only-when-idle) so quiet
+Every `Background` mapping is weighted-fair (not run-only-when-idle) so low-priority
 work never starves. The **library is always unprivileged**; only the measurement
 harness may need elevation (macOS `powermetrics`, Linux RAPL) for power/placement
 readings.
@@ -197,10 +197,42 @@ and the crate-level rustdoc; keep them in sync.
 "…")]`. Without it, docs.rs (which builds `--all-features`) renders gated items
 as though they were always available.
 
-**Docs are part of "done":** land a dated entry in `CHANGELOG.md` (running
-project state), update `docs/ROADMAP.md` (status + release plan), and put durable
-rationale — including negative results and honest caveats — in `docs/DESIGN.md`.
-Measured results go in `docs/BENCHMARKS.md`; refresh them when behaviour changes.
+**Docs are part of "done".** Each file has one job; keep changes in the right one
+rather than restating across them:
+
+| File | Holds | Scope |
+|---|---|---|
+| `CHANGELOG.md` | What shipped, grouped Added/Changed/Fixed/… under the pending release | One line per change. Not a narrative — reasoning goes in `DESIGN.md` |
+| `docs/DESIGN.md` | Why: rationale, negative results, caveats, findings worth remembering | Long-form. The only file that should grow |
+| `docs/BENCHMARKS.md` | Measured results, how to run the harness per OS, data points still wanted | Refresh when behaviour changes; add a row to *Data points still wanted* when a gap appears |
+| `docs/ROADMAP.md` | 0.9 to 1.0 only: release steps, evaluation window, stability commitments, open gaps | Short. Anything not gating 1.0 belongs elsewhere |
+| `README.md` | What the crate does, how to use it, and the caveats that change how it should be used | Link out rather than expand |
+
+**Writing style for `README.md` and `docs/*.md`.** These rules exist because the
+docs had drifted into a generated-sounding register. Apply them to prose in those
+files and to rustdoc; `CHANGELOG.md` follows them too, minus the tone notes.
+
+- **No second person, no first person.** Not "your tasks", "you can", "we chose",
+  "our design". Describe the library and what it does: "runs async tasks", "the
+  class covers both axes", "the first version wrote X". Imperatives are fine in
+  instructions ("Build first, then run the binary"). The dual-licence boilerplate
+  at the end of the README is standard legal text and stays as it is.
+- **Bold is for bullet lead-ins only** — the first word or phrase of a list item —
+  plus the first `bgrt` in the README. No bold mid-sentence, none in table cells,
+  none opening a paragraph. Italics are for genuine contrast (*more* per work
+  unit), used sparingly. If a sentence needs bold to land, rewrite it.
+- **No decorative icons.** Write "yes" and "no" in tables, not ✅ and ❌. The
+  README's CI and version badges are fine.
+- **Do not sell.** The reader decides whether the crate is worth using; the docs
+  explain what it does and why it does it that way. Avoid "the whole point",
+  "what it really sells", "the headline result", "load-bearing", "genuinely",
+  "crucially", "precisely the failure". State the fact and stop.
+- **Plain words, short sentences.** Prefer "use" over "utilize", "about" over
+  "approximately", "needs" over "requires" where it reads naturally, "does
+  nothing" over "is inert". Cut intensifiers — "deliberately", "notably",
+  "critically" — unless the deliberateness is the actual point.
+- **Understate the caveats.** They land harder plainly stated: "nobody has run it
+  on that hardware" beats "a critical unverified gap".
 
 **Don't restate the QoS mapping table.** The canonical copy is in the README
 (*QoS classes*); this file's table is the contributor quick-reference and the only
