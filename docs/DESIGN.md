@@ -56,11 +56,9 @@ thread's own demands.
 
 ## QoS classes and per-OS mapping
 
-| `QosClass`   | macOS                          | Windows                                  | Linux                                |
-|--------------|--------------------------------|------------------------------------------|--------------------------------------|
-| `Background` | `QOS_CLASS_BACKGROUND` (E-core-confined, time-shared) | EcoQoS + `THREAD_PRIORITY_BELOW_NORMAL` | `nice(19)` (+ opt-in E-core affinity) |
-| `Utility`    | `QOS_CLASS_UTILITY`            | EcoQoS + `THREAD_PRIORITY_NORMAL`        | `nice(10)`                           |
-| `Default`    | `QOS_CLASS_DEFAULT`            | clear EcoQoS + normal priority           | `nice(0)`                            |
+The mapping table is maintained in one place — [the README](../README.md#qos-classes)
+— because it was previously restated in four files and drifted in three of them.
+This section carries only the *reasoning* behind it.
 
 Rationale:
 - **`Background` is the "fans never" class.** On Apple Silicon it is hard-confined
@@ -92,9 +90,12 @@ work always gets a (small) share under contention:
 
 A `bgrt` library crate plus a `bgrt-bench` measurement binary.
 
-- `qos` — `QosClass`. `backend/` does `cfg`-gated dispatch of `apply(QosClass)`
-  to `macos` (`pthread_set_qos_class_self_np`), `linux` (`setpriority`), `windows`
-  (`SetThreadInformation` EcoQoS + `SetThreadPriority`), with a no-op fallback.
+- `qos` — `QosClass` (`#[non_exhaustive]`; see the README's stability section).
+  `backend/` does `cfg`-gated dispatch of `apply(QosClass)` to `macos`
+  (`pthread_set_qos_class_self_np`), `linux` (`setpriority` + `backend/ioprio.rs`),
+  `windows` (background mode + `SetThreadInformation` EcoQoS + `SetThreadPriority`
+  + memory-priority restore), with a no-op fallback. `backend/uclamp.rs` adds the
+  opt-in Linux frequency clamp; it is a no-op elsewhere.
 - `runtime` (feature `tokio`, default on) — `RuntimeBuilder` → `Runtime`, wrapping
   a multi-thread tokio runtime whose `on_thread_start` applies the class to **every**
   runtime thread (workers + blocking pool). `current_thread(true)` selects tokio's
@@ -185,14 +186,16 @@ The harness compares executors on the same CPU-bound workload. Design choices:
 - **Graceful degradation:** any signal the OS/privilege can't provide is reported
   as `n/a`/`None`, never an error.
 
-Availability:
+Per-signal availability is tabulated in
+[the README](../README.md#whats-measurable-per-platform) and in the `telemetry`
+module docs; it is not repeated here.
 
-| Signal      | Linux                | Windows                     | macOS                       |
-|-------------|----------------------|-----------------------------|-----------------------------|
-| throughput  | ✅                   | ✅                          | ✅                          |
-| CPU / E-P   | ✅ sysfs             | CPU index only (E/P TODO)   | via `powermetrics` (sudo)   |
-| frequency   | ✅ sysfs             | ✅ `CallNtPowerInformation` | via `powermetrics` (sudo)   |
-| energy      | RAPL (often root)    | —                           | `powermetrics` (sudo)       |
+**The harness measures CPU only.** The workload is a CPU-bound loop, so every
+published number exercises the CPU half of a `QosClass` and none of the disk
+half. That is a gap in the *evidence*, not in the implementation — the I/O
+mapping is behaviour-tested per platform — but it means the benchmark tables
+should not be read as validating the "CPU *and* disk" claim. Tracked in
+[`ROADMAP.md`](ROADMAP.md) as a 0.9 blocker.
 
 ## Privileges
 
@@ -216,11 +219,11 @@ the decision.
 **Finding 1: two of three platforms already did it.** The feature was mostly
 already present, through mechanisms the crate was using for other reasons:
 
-| | I/O priority | via |
+| | I/O priority *at the time* | via |
 |---|---|---|
 | macOS | already throttled | `QOS_CLASS_BACKGROUND` implies disk-I/O throttling — one call, both axes |
 | Linux | probably already correct | with no explicit I/O priority the kernel derives a best-effort level from niceness, `(nice + 20) / 5` → `nice(19)` = level 7, `nice(10)` = level 6 |
-| Windows | **the one real gap** (since closed) | EcoQoS and thread priority don't touch I/O priority |
+| Windows | **the one real gap** | EcoQoS and thread priority don't touch I/O priority |
 
 That derivation lands on exactly the mapping we would have chosen by hand, which
 made "add I/O priority" one platform's gap plus a documentation commitment rather
@@ -234,8 +237,10 @@ Committing the meaning up front costs nothing (it already described macOS and
 probably Linux) and turns the eventual Windows change into a move *toward*
 documented behaviour.
 
-So Linux now sets I/O priority explicitly (`backend/ioprio.rs`), and Windows is
-documented as the outstanding gap.
+**All three platforms now ship it.** Linux sets I/O priority explicitly
+(`backend/ioprio.rs`) rather than relying on the nice-derived value; Windows —
+the one real gap at the time — was closed with background processing mode, as
+described below. macOS needed no new call.
 
 **Best-effort, never `IOPRIO_CLASS_IDLE`.** Idle-class I/O only gets the disk
 when nothing else wants it — the I/O equivalent of `SCHED_IDLE`, which this
@@ -483,8 +488,8 @@ objection, and it is the thing to re-test — not the conclusion.
   reference platform". Linux now matches explicitly via `ioprio_set`; Windows is
   the remaining gap. Before that work, the same file-heavy background task was
   measurably quieter on macOS than elsewhere through a mechanism `bgrt` never
-  asked for — an undocumented asymmetry, now closed on two of three platforms and
-  documented on the third.
+  asked for — an undocumented asymmetry, since closed on all three platforms
+  (Linux explicitly via `ioprio_set`, Windows via background processing mode).
 - **macOS QoS promotion / priority inversion.** A higher-QoS thread that
   synchronously `join`s (or otherwise blocks on) a background thread *promotes it
   off the efficiency cores*. An async `await` on a background runtime does not.

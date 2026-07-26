@@ -37,6 +37,7 @@ pub enum Error {
 
     /// The underlying Tokio runtime could not be built.
     #[cfg(feature = "tokio")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
     #[error("failed to build runtime")]
     Runtime(#[source] std::io::Error),
 
@@ -52,6 +53,7 @@ pub enum Error {
     /// `Handle`. Wrapping those runtimes is the point of the crate. See the
     /// crate-level *Semver and wrapped dependencies* section.
     #[cfg(feature = "rayon")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
     #[error("failed to build thread pool")]
     ThreadPool(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
@@ -63,6 +65,7 @@ impl Error {
     /// Returns `None` for errors that did not originate in the OS (currently
     /// only [`Error::ThreadPool`]). On Windows this is the Win32 error code; on
     /// Unix, the `errno` value.
+    #[must_use]
     pub fn raw_os_error(&self) -> Option<i32> {
         match self {
             Error::Backend { source, .. } => source.raw_os_error(),

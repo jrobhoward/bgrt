@@ -8,6 +8,53 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Pre-0.9 API commitments and a documentation reconciliation — 2026-07-26
+
+- **`QosClass` is now `#[non_exhaustive]`.** Matching it from outside `bgrt`
+  needs a `_` arm. The three classes cover what all three platforms express in
+  common, and the crate's promise to only ever *lower* demands rules out the
+  obvious additions (macOS's `USER_INITIATED`/`USER_INTERACTIVE` both raise
+  priority) — so a fourth class is unlikely, but this keeps it a minor release
+  rather than a major one. No internal changes needed: every `match class` site
+  is inside the defining crate, and `bgrt-bench` only constructs values.
+- **MSRV policy stated:** an increase is a **minor** bump, never a patch. Written
+  into the crate-level rustdoc and the README's new *Stability* section, next to
+  the existing `telemetry` exemption and wrapped-dependency policy.
+- **Rustdoc refinements.** `doc(cfg(...))` feature badges behind `--cfg docsrs`
+  (docs.rs builds `--all-features`, so gated items were rendering as though
+  always available); a crate-level *Limitations* section, since a docs.rs reader
+  never sees the README; the `current_thread` drop-deadlock hazard documented
+  (dropping such a `Runtime` from inside its own blocking pool joins the driver
+  thread, where plain Tokio panics); `#[must_use]` on the remaining getters.
+- **Documentation reconciled against the code.** Scope changed twice during
+  development (I/O added, GPU ruled out) and the docs recorded it inconsistently.
+  Fixed: `CLAUDE.md` claimed **there was no CI** while a 3-OS matrix has been
+  running since Phase 7; `DESIGN.md`'s QoS table omitted I/O and `uclamp`
+  entirely, its telemetry table still said Windows E/P was a TODO, and its I/O
+  section called Windows an open gap 16 lines before calling it closed;
+  `ROADMAP.md` documented a `Backend` trait, a `Telemetry` trait, a
+  `bgrt::Builder`, `proptest`, and macOS `hw.perflevel*` detection — none of
+  which exist. README's *Scope: what `bgrt` is not* opened by explaining what
+  `bgrt` **is** (I/O priority, in scope); it is now just *Scope*, with the
+  in/out split made explicit.
+- **Deduplicated.** The QoS mapping table had five copies and had drifted in
+  three; the README's is now canonical and `docs/` links to it. Measured results
+  moved to `docs/BENCHMARKS.md`. `ROADMAP.md` dropped the pre-implementation API,
+  architecture, and conventions sections that duplicated `CLAUDE.md` and had gone
+  stale (325 → 170 lines); README 487 → 340.
+- **Stated plainly that the benchmarks measure CPU only.** The crate's second
+  headline bullet is "CPU *and* disk", but `bgrt-bench`'s workload is a CPU-bound
+  loop — the disk half is behaviour-tested per platform and never benchmarked.
+  Noted in the README, `DESIGN.md`, and `BENCHMARKS.md`, and tracked in
+  `ROADMAP.md` as the one item blocking 0.9.
+- **0.9 release plan recorded** in `ROADMAP.md`: repository public + crates.io
+  publish, then **1.0 sixty days later** absent an issue or request calling for a
+  breaking change. No version bump in this change.
+- **README badges** — CI status, crates.io, docs.rs, MSRV, and license — plus the
+  **License section** the crate was missing. The crates.io and docs.rs badges
+  read "not found" until publication, so the release steps are now explicitly
+  ordered: publish first, make the repo public second.
+
 ### Windows memory-priority restore assumed a normal baseline — 2026-07-25
 - **Fixed: `apply(Background)` wrote `MEMORY_PRIORITY_NORMAL` unconditionally
   after leaving background mode**, on the assumption that normal is where every

@@ -1,5 +1,11 @@
 # bgrt
 
+[![CI](https://github.com/jrobhoward/bgrt/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jrobhoward/bgrt/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/bgrt.svg)](https://crates.io/crates/bgrt)
+[![docs.rs](https://img.shields.io/docsrs/bgrt)](https://docs.rs/bgrt)
+[![MSRV](https://img.shields.io/badge/MSRV-1.85.0-blue.svg)](#stability)
+[![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 **bgrt** ("background runtime") runs your async tasks and threads at the lowest
 energy footprint the OS allows — on **efficiency cores**, at **low clock
 frequency**, **without spinning up the fans** — while still making forward
@@ -22,14 +28,17 @@ it onto a quiet executor.
   (though the hybrid-Linux path is
   [unverified on real P+E hardware](#hybrid-linux-is-implemented-but-unmeasured)).
 
-> **Status:** the library (QoS backends, runtime wrapper, quiet-thread spawner,
-> rayon pool) and the measurement harness are implemented and tested. macOS (M1)
-> and Linux (Threadripper, AMD x86 — both *homogeneous*) are run-verified;
-> Windows runs in CI. Efficiency-core pinning on hybrid Linux is
-> [implemented but unmeasured](#hybrid-linux-is-implemented-but-unmeasured).
-> Design:
-> [`docs/DESIGN.md`](docs/DESIGN.md); plan: [`docs/ROADMAP.md`](docs/ROADMAP.md);
-> state: [`CHANGELOG.md`](CHANGELOG.md).
+> **Status:** feature-complete and tested; pre-1.0, heading for a 0.9 public
+> preview (see [Stability](#stability)). All three backends execute in CI on
+> their own OS. macOS (M1) and two homogeneous Linux machines are run-verified
+> for CPU; efficiency-core pinning on hybrid Linux is
+> [implemented but unmeasured](#hybrid-linux-is-implemented-but-unmeasured), and
+> the benchmarks cover CPU but [not yet disk](#benchmarking-bgrt-bench).
+>
+> Design: [`docs/DESIGN.md`](docs/DESIGN.md) · plan:
+> [`docs/ROADMAP.md`](docs/ROADMAP.md) · results:
+> [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) · state:
+> [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Usage
 
@@ -83,6 +92,9 @@ Runnable examples (`cargo run --example <name> -p bgrt`):
 
 ## QoS classes
 
+This table is canonical — `docs/` and the rustdoc link here rather than
+restating it.
+
 | Class | macOS | Windows | Linux |
 |---|---|---|---|
 | `Background` | `QOS_CLASS_BACKGROUND` (efficiency cores, throttled I/O) | background mode (throttled I/O) + EcoQoS + below-normal | `nice(19)` + I/O best-effort 7 + opt-in E-core affinity + opt-in `uclamp` frequency cap |
@@ -114,6 +126,12 @@ The headline signal is **`work/s` (throughput)**: the runs are duration-bounded,
 so a quieter executor completes *less* work in the same wall time. The example
 above (macOS, no sudo) shows Background doing ~31% of Default's work — the
 efficiency-core confinement, measured without any privileged telemetry.
+
+> **The benchmarks measure CPU only.** The workload is a CPU-bound loop, so
+> nothing below exercises the *disk* half of a `QosClass`. The I/O mapping is
+> behaviour-tested on each platform (see [Disk I/O](#disk-io-what-each-platform-actually-does))
+> but is not benchmarked; treat the "CPU *and* disk" claim as documented on the
+> disk side, measured on the CPU side.
 
 Flags: `--executors default,utility,background,background-threads` (subset/order),
 `--workers <n>`, `--format json`, `--interval <ms>` (sampling), `--pin` (Linux
@@ -153,7 +171,7 @@ sudo ./target/release/bgrt-bench --duration 3
 cargo run --release -p bgrt-bench -- --duration 3
 ```
 
-### Measured on an Apple M1 (with `sudo … --mac-power`)
+### Headline result — Apple M1 (with `sudo … --mac-power`)
 
 ```text
 executor              wall_ms       work      work/s     %E  mean_mhz  max_mhz  energy_j
@@ -170,11 +188,26 @@ peaked at **1029 MHz vs 2751 MHz**, and drew **~12× less CPU power** (0.275 J v
 still ~4× less energy. This is the "stay on the efficiency cores, keep the clocks
 and fans down" goal, measured.
 
-> `--mac-power` figures (`%E`, frequency, energy) come from `powermetrics`, which
-> reports **system-wide** CPU state, not per-thread — so they reflect total CPU
-> activity during the run (the right lens for fans/battery, but noisier if other
-> apps are busy). The privilege-free **`work/s`** column is the cleanest
-> per-executor signal.
+**[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) has the full set** — three Linux
+machines, with the analysis. The short version of what they show:
+
+- **Homogeneous CPU, no contention: `nice(19)` is a null result.** All four
+  executors are identical on a Threadripper. `nice` only deprioritizes when
+  threads compete for a core, and with no E-cores there's no placement lever
+  either.
+- **`--clamp-frequency` is what bites there.** A `uclamp` cap gives the governor
+  the frequency input `nice` doesn't: 2188 vs 3685 MHz on the Threadripper,
+  840 vs 3192 MHz on a Sandy Bridge i7. It needs the `schedutil` governor (or
+  `intel_pstate=passive`) and kernel ≥ 5.8 — under a fixed governor or HWP it's
+  inert. Check with
+  `cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor`. Like the
+  library itself, it only ever *lowers*, so it needs no privileges.
+- **Frequency clamping is a stay-cool lever, not a per-unit-work efficiency
+  win.** On the i7, `Background` spends slightly *more* energy per work-unit
+  (~88 vs ~74 µJ) — at low clocks, fixed and leakage power dominate. The payoff
+  is lower *instantaneous* power and not stealing thermal budget from foreground
+  work. macOS E-core *placement* is the opposite case: ~4× less energy per unit
+  of work. Distinct levers, distinct economics.
 
 > **macOS note (QoS promotion):** synchronously waiting on a background thread
 > from a higher-QoS thread promotes it *off* the efficiency cores
@@ -183,90 +216,9 @@ and fans down" goal, measured.
 > runner. The practical takeaway: fire-and-forget background threads stay quiet,
 > but if a foreground thread blocks waiting on one, macOS may speed it up.
 
-### Measured on Linux / AMD Threadripper (homogeneous, 16-core, with `sudo`)
+### What's measurable per platform
 
-```text
-executor              wall_ms       work      work/s     %E  mean_mhz  max_mhz  energy_j
-default                 15000    4350512      290033    n/a      3687     3692   960.534
-utility                 15000    4350058      290003    n/a      3687     3692   982.798
-background              15000    4348280      289885    n/a      3687     3692   969.635
-background-threads      15000    4349948      289993    n/a      3687     3692   974.817
-verdict: background peak frequency ≤ (stayed cool) default
-```
-
-All executors are identical — the expected null result on a homogeneous CPU. Two
-reasons `nice(19)` shows nothing here:
-
-1. **No contention:** one active thread, no competing load. `nice` only
-   deprioritizes when other threads are competing for the same core.
-2. **No E-cores:** Threadripper has no `cpu_capacity` sysfs entries, so
-   efficiency-core affinity is a no-op and there's no DVFS difference from nice alone.
-
-The `energy_j` variance (<3%) is measurement noise from RAPL reading the entire
-16-core package, not per-thread power. Meaningful Linux results need a
-heterogeneous (P+E) CPU (Alder Lake, Raptor Lake, Meteor Lake) or a CPU-loaded
-machine where scheduling priority actually changes which threads run.
-
-To get a *frequency* effect on a homogeneous CPU, add `--clamp-frequency`: it
-applies a `uclamp` cap to background work so the governor picks a lower clock even
-at 100% busy (`nice` alone gives the governor no frequency input). It only bites
-with the `schedutil` governor (or `intel_pstate=passive`) on kernel ≥ 5.8 — under
-a fixed governor or HWP the cap is inert. Check with
-`cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor`. Like the library
-itself, the clamp is unprivileged (it only ever *lowers* `util_max`).
-
-### Measured on Linux / AMD Threadripper (homogeneous, with `sudo … --clamp-frequency`)
-
-Same machine, `schedutil` governor confirmed, 10 s run with `sudo` so RAPL energy
-is available:
-
-```text
-executor              wall_ms       work      work/s     %E  mean_mhz  max_mhz  energy_j
-default                 10000    2898328      289830    n/a      3685     3692   605.257
-utility                 10000    2898107      289809    n/a      3685     3692   614.536
-background              10000    1717806      171779    n/a      2188     2200   492.676
-background-threads      10000    1723344      172331    n/a      2195     2200   485.833
-verdict: background peak frequency ≤ (stayed cool) default
-```
-
-`uclamp` does bite on Threadripper too: `Background` ran at **2188 MHz mean vs 3685 MHz**
-for `Default` (~1.7× lower clock) and drew **~1.2× less package energy** (493 J vs 605 J
-over 10 s), at ~59% of the throughput. The frequency drop is shallower than on the Sandy
-Bridge i7 below — Threadripper's 16-core package has much higher fixed power, so the
-per-core clock reduction moves the package needle less. Per-unit-work energy is modestly
-*worse* for `Background` on this machine for the same reason as the i7 (see caveat below).
-
-### Measured on Linux / Intel i7-2720QM (homogeneous, with `--clamp-frequency`)
-
-With the `schedutil` governor and `--clamp-frequency`, the homogeneous-CPU null
-result flips to dramatic — here on a 2011 Sandy Bridge i7 (4C/8T, no E-cores):
-
-```text
-executor              wall_ms       work      work/s     %E  mean_mhz  max_mhz  energy_j
-default                 10000    2499377      249935    n/a      3192     3289   184.103
-utility                 10000    2545955      254592    n/a      3245     3289   169.710
-background              10000     651358       65135    n/a       840     2990    57.497
-background-threads      10000     629097       62906    n/a       802     1295    50.947
-verdict: background peak frequency ≤ (stayed cool) default
-```
-
-`Background` ran at a **840 MHz mean clock vs 3192 MHz** for `Default` (~3.8× lower)
-and drew **~3.2× less CPU energy over the 10 s window** (57 J vs 184 J), at ~26% of
-the throughput. This is `uclamp` doing exactly what `nice` alone could not on a
-homogeneous CPU. `Utility` is left unclamped by design and tracks `Default`.
-
-**Honest caveat — this is a stay-cool / low-power-draw lever, not a per-unit-work
-efficiency win.** Dividing energy by work, `Background` here actually spends
-*slightly more* per work-unit (~88 vs ~74 µJ): at low clocks, fixed and leakage
-power dominate, so on this old silicon "race to idle" would finish a fixed batch
-for marginally less total energy. The payoff is lower *instantaneous* power, a
-cooler and quieter machine, and not stealing thermal/power budget from foreground
-work — not a smaller battery bill for a fixed amount of work. (Contrast the macOS
-result above, where efficiency-core *placement* cuts energy ~4× **per unit of
-work**: a different mechanism with a different trade-off.)
-
-**What's measurable per platform** (anything unavailable shows `n/a` / `null`,
-never an error):
+Anything unavailable shows `n/a` / `null`, never an error:
 
 | Signal | Linux | Windows | macOS |
 |---|---|---|---|
@@ -282,10 +234,32 @@ library itself never needs privileges — only this measurement tool does.
 
 ## Limitations & notes
 
+### What a class can and can't promise
+
+- **Frequency isn't directly controllable** from userspace — `bgrt` *biases*
+  against clocking up (chiefly by keeping work off performance cores); it can't
+  *guarantee* the clock never rises, especially under other system load.
+- **Classification is once-per-thread, by design.** QoS is applied when a runtime
+  worker or thread starts; there's no per-task re-classification. Pick the right
+  runtime/thread for the work. (This also sidesteps that, on Linux, an
+  unprivileged thread can lower its priority but **cannot raise it back**.)
+  Applying `Default` to an already-quiet thread — or building any runtime inside
+  an already-niced process (`nice -n 10 …`, systemd `Nice=`) — therefore leaves
+  Linux niceness where it is. `apply` reports success rather than surfacing an
+  `EACCES` the caller could do nothing about; macOS and Windows do restore.
+- **macOS join-promotion:** synchronously waiting on a background thread from a
+  higher-QoS thread can promote it off the efficiency cores (see the
+  benchmarking note above). Async `await` on a background runtime does not.
+- **Telemetry availability varies** (see [the table
+  above](#whats-measurable-per-platform)): Linux is fullest unprivileged; macOS
+  frequency/power/residency need `sudo powermetrics`; Windows reports frequency,
+  CPU index, and E/P classification, but has no energy counter. The *library*
+  never needs privileges — only measurement does.
+
 ### Hybrid Linux is implemented but unmeasured
 
 **`pin_efficiency_cores` has never been run on a heterogeneous (P+E) Linux
-machine.** Every Linux measurement in this README is from a homogeneous CPU — an
+machine.** Every Linux measurement is from a homogeneous CPU — an
 AMD Threadripper and an Intel Sandy Bridge i7 — neither of which has efficiency
 cores or exposes the `cpu_capacity` sysfs entries the detection relies on. On
 those machines the feature correctly does nothing, which is exactly the result
@@ -296,7 +270,7 @@ Concretely, what is and isn't verified on Linux:
 | Piece | Status |
 |---|---|
 | `nice` mapping per QoS class | ✅ run-verified (tests assert `nice 19`) |
-| `uclamp` frequency cap | ✅ run-verified, two machines (tables above) |
+| `uclamp` frequency cap | ✅ run-verified, two machines ([benchmarks](docs/BENCHMARKS.md)) |
 | `topology::select_efficiency_cores` (the selection logic) | ✅ unit-tested, incl. hybrid and three-tier layouts |
 | Reading `cpu_capacity` from sysfs on a real hybrid CPU | ❌ never executed — no such hardware available |
 | `sched_setaffinity` pinning to detected E-cores | ❌ never executed against a non-empty core set |
@@ -316,20 +290,6 @@ branch that actually labels a core "efficiency" has only ever been exercised by
 unit tests of the selection logic. Windows *placement* is unaffected either way:
 that is EcoQoS's job, not ours.
 
-- **Frequency isn't directly controllable** from userspace — `bgrt` *biases*
-  against clocking up (chiefly by keeping work off performance cores); it can't
-  *guarantee* the clock never rises, especially under other system load.
-- **Classification is once-per-thread, by design.** QoS is applied when a runtime
-  worker or thread starts; there's no per-task re-classification. Pick the right
-  runtime/thread for the work. (This also sidesteps that, on Linux, an
-  unprivileged thread can lower its priority but **cannot raise it back**.)
-  Applying `Default` to an already-quiet thread — or building any runtime inside
-  an already-niced process (`nice -n 10 …`, systemd `Nice=`) — therefore leaves
-  Linux niceness where it is. `apply` reports success rather than surfacing an
-  `EACCES` the caller could do nothing about; macOS and Windows do restore.
-- **macOS join-promotion:** synchronously waiting on a background thread from a
-  higher-QoS thread can promote it off the efficiency cores (see the benchmarking
-  note above). Async `await` on a background runtime does not.
 ### Disk I/O: what each platform actually does
 
 A `QosClass` covers CPU *and* block I/O everywhere, but through three different
@@ -423,56 +383,53 @@ What does work, in order of preference:
    small share of the work, classifying yours may still get most of the benefit —
    but verify, because the failure is silent.
 
-- **`bgrt` classifies CPU and disk work, not GPU work** — and GPU is very
-  unlikely to ever be in scope; see
-  [Scope: what `bgrt` is not](#scope-what-bgrt-is-not) below.
-- **Telemetry availability varies** (see the table above): Linux is fullest
-  unprivileged; macOS frequency/power/residency need `sudo powermetrics`; Windows
-  reports frequency, CPU index, and E/P classification, but has no energy
-  counter. Linux RAPL energy is often root-only. The *library* never needs
-  privileges — only measurement does.
+## Scope
 
-## Scope: what `bgrt` is not
-
-**I/O priority — in scope and shipped on all three platforms.** A `QosClass`
-governs disk demands as well as CPU; see the section above for the per-platform
-mechanisms and caveats. Split CPU/I/O control (asking for quiet CPU but normal
+**CPU and block I/O are in scope, on all three platforms.** One `QosClass`
+governs both — see [Disk I/O](#disk-io-what-each-platform-actually-does) for the
+per-platform mechanisms and caveats. Split CPU/I/O control (quiet CPU but normal
 I/O, or the reverse) is *not* offered, because two of three platforms can't
-express it — reasoning in
+express it; if demand ever appears it can be added as an additive override.
+Reasoning in
 [`docs/DESIGN.md`](docs/DESIGN.md#scope-cpu-and-io-now-gpu-probably-never).
 
-**GPU — probably never.** Not on the roadmap, and it would take a shift in the
-platforms to get there. As things stand today:
+**GPU is probably never in scope.** Not on the roadmap, and it would take a shift
+in the platforms to get there. In short: there is **no OS-level per-thread GPU
+QoS** anywhere — the per-API equivalents (Vulkan, CUDA, D3D12; Metal has none)
+are mutually incompatible and **arbitrate contention rather than save energy**, a
+GPU idling at high clocks while your work waits can burn *more* energy for the
+same result, D3D12 has **no tier below normal** to ask for, and GPU work belongs
+to a queue rather than to a classifiable thread. For AI workloads the real levers
+— picking a low-power compute unit, cutting batch size, quantizing — are
+model-level decisions a thread-QoS crate can't make.
 
-- There is **no OS-level per-thread GPU QoS** on macOS, Windows, or Linux. The
-  whole library rests on one primitive all three expose with the same meaning,
-  and no GPU equivalent exists. What exists is per-API and mutually incompatible
-  (Vulkan, CUDA, D3D12, Metal — the last has no queue priority at all).
-- Those APIs **arbitrate contention; they are not energy levers.** Lowering GPU
-  priority makes your work wait. It doesn't downclock the GPU or move work to
-  lower-power units — and a GPU idling at high clocks while your work waits can
-  burn *more* energy for the same result.
-- On Windows there's **no tier below normal** to ask for (D3D12 offers normal,
-  high, global-realtime), so the central operation — "ask for less" — has no
-  expression.
-- **The threading model doesn't transfer.** `bgrt` classifies a thread once at
-  start; GPU work is submitted to a queue owned by a device context. There's no
-  thread to classify.
-- **For AI workloads the real levers are elsewhere:** choosing a low-power
-  compute unit (ANE via CoreML, NPU via DirectML, integrated over discrete),
-  cutting batch size and concurrency, or quantizing. Those are model- and
-  framework-level decisions a thread-QoS crate can't make, and shipping a GPU
-  knob here would look like it saves energy without doing so.
+GPU energy matters; it's that *today* the lever isn't a scheduling hint, so it
+doesn't belong in a scheduling-hint library. Most of those objections describe
+what the platforms currently expose rather than a principle, so
+[`docs/DESIGN.md`](docs/DESIGN.md#gpu--probably-never-but-heres-what-would-change-that)
+spells out the specific developments that should reopen the question.
 
-GPU energy matters — it's that *today* the lever isn't a scheduling hint, so it
-doesn't belong in a scheduling-hint library. Four of those five objections
-describe what the platforms currently expose, not a principle, so the question is
-worth reopening if any of them change: an OS shipping a per-context GPU energy
-QoS that's unprivileged to lower; graphics APIs growing an eco tier that affects
-clocks or unit placement rather than only queue order; inference runtimes
-converging on a portable low-power mode; or GPU submissions inheriting the
-classification of the thread that queued them. The conditions are spelled out in
-[`docs/DESIGN.md`](docs/DESIGN.md#gpu--probably-never-but-heres-what-would-change-that).
+## Stability
+
+The API is small, reviewed, and not expected to change — but the crate is
+pre-1.0, and the release plan (0.9 public preview, then 1.0 after a 60-day
+evaluation window) is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+What is committed to now:
+
+- **MSRV is 1.85.0** (edition 2024). An MSRV increase is a **minor** version
+  bump, never a patch.
+- **`QosClass` and `Error` are `#[non_exhaustive]`** — matching either from
+  outside the crate needs a `_` arm, so a new class or error variant is a minor
+  release rather than a major one.
+- **The `telemetry` module is exempt from semver entirely.** It exists to serve
+  `bgrt-bench` and may change or disappear in any release. Pin an exact version
+  if you depend on it.
+- **A Tokio or rayon major release is a `bgrt` major release.** `bgrt` wraps
+  those runtimes rather than hiding them — `Runtime::spawn` returns Tokio's
+  `JoinHandle`, `RayonPool` derefs to `rayon::ThreadPool` — so their types are
+  part of the public API by design. Use the `bgrt::tokio` / `bgrt::rayon`
+  re-exports to name the exact versions `bgrt` resolved.
 
 ## Development
 
@@ -485,3 +442,16 @@ cargo run --release -p bgrt-bench -- --duration 3
 
 Requires Rust ≥ 1.85 (edition 2024). See [`CLAUDE.md`](CLAUDE.md) for
 architecture and conventions.
+
+CI runs the full suite on Linux, macOS, and Windows — which is where the
+per-OS backends actually execute, since each is `cfg`-gated to its own platform.
+The two cross-compile checks in `CLAUDE.md` are the local pre-push substitute.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this crate by you, as defined in the Apache-2.0 license, shall
+be dual licensed as above, without any additional terms or conditions.

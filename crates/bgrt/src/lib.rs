@@ -81,7 +81,38 @@
 //! altogether (see its docs). And [`Error`] deliberately boxes rayon's build
 //! error, so the enum's shape survives rayon reshaping its own error type —
 //! that is about *this* enum staying stable, not about hiding the dependency.
+//!
+//! The minimum supported Rust version is **1.85.0** (edition 2024). An MSRV
+//! increase is a **minor** version bump, never a patch, and never happens in a
+//! patch release of an existing minor.
+//!
+//! # Limitations
+//!
+//! Three caveats bound what a [`QosClass`] can promise. Each is documented in
+//! full where it applies; in brief:
+//!
+//! - **Classification stops at the thread `bgrt` created.** Child threads
+//!   inherit only on Linux — macOS and Windows start them unclassified, and
+//!   neither can be corrected from outside, because their APIs act only on the
+//!   calling thread. Handing a `Background` thread to a library that runs its
+//!   own pool leaves that pool at full priority on two of three platforms. See
+//!   [`QosClass`] and the [thread module](self::spawn_thread).
+//! - **Frequency is biased, not guaranteed.** `bgrt` expresses intent to the
+//!   scheduler; it cannot pin a clock from userspace, and quiet work can still
+//!   clock up under other system load.
+//! - **Some mappings are inert on some configurations.** Linux I/O priority
+//!   needs an I/O scheduler that honours it (`none`, a common NVMe default, does
+//!   not), and the opt-in `uclamp` frequency cap needs `schedutil`. Inert rather
+//!   than wrong, and documented per-knob.
+//!
+//! The full per-platform detail, the measured results behind it, and the
+//! negative results live in the repository: `README.md` for the benchmark tables
+//! and the inheritance table, `docs/DESIGN.md` for the rationale.
 #![warn(missing_docs)]
+// docs.rs builds with `--cfg docsrs` (see `[package.metadata.docs.rs]`), which
+// turns on the feature badges that tell a reader an item needs a feature flag.
+// Guarded so stable builds are unaffected — `doc_cfg` is nightly-only.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod backend;
 pub mod error;
@@ -94,6 +125,7 @@ mod thread;
 mod topology;
 
 #[cfg(feature = "telemetry")]
+#[cfg_attr(docsrs, doc(cfg(feature = "telemetry")))]
 pub mod telemetry;
 
 #[cfg(test)]
@@ -102,8 +134,10 @@ mod test_support;
 pub use error::Error;
 pub use qos::QosClass;
 #[cfg(feature = "rayon")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
 pub use rayon_pool::{RayonBuilder, RayonPool};
 #[cfg(feature = "tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub use runtime::{Runtime, RuntimeBuilder};
 pub use thread::{ThreadBuilder, spawn_thread};
 
@@ -111,12 +145,14 @@ pub use thread::{ThreadBuilder, spawn_thread};
 /// (`JoinHandle`, `Handle`, …) without risking a mismatched second copy in the
 /// dependency graph. See *Semver and wrapped dependencies*.
 #[cfg(feature = "tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub use tokio;
 
 /// The rayon version `bgrt` wraps, re-exported so callers can name its types
 /// without risking a mismatched second copy in the dependency graph. See *Semver
 /// and wrapped dependencies*.
 #[cfg(feature = "rayon")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
 pub use rayon;
 
 /// Apply an energy [`QosClass`] to the **current** thread.

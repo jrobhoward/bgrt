@@ -81,7 +81,18 @@
 /// `RayonBuilder`, and `ThreadBuilder` all default to [`QosClass::Background`],
 /// because constructing one is already a request for quiet execution. Don't read
 /// `QosClass::default()` as "what `bgrt` does by default".
+///
+/// # Stability
+///
+/// This enum is `#[non_exhaustive]`: matching on it from outside `bgrt` needs a
+/// `_` arm. The three classes cover what all three platforms express in common,
+/// and the crate's promise to only ever *lower* a thread's demands rules out the
+/// obvious additions (macOS's `USER_INITIATED` and `USER_INTERACTIVE` both raise
+/// priority). A fourth class is therefore unlikely — but `#[non_exhaustive]`
+/// keeps it a minor release rather than a major one if a platform ever exposes a
+/// rung between these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum QosClass {
     /// Lowest energy: prefer efficiency cores and low clock frequency, while
     /// still making (slow) forward progress under contention. The "fans never"

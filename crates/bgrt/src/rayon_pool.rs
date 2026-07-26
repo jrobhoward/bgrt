@@ -166,6 +166,7 @@ impl std::ops::Deref for RayonPool {
 
 impl RayonPool {
     /// The energy [`QosClass`] applied to this pool's threads.
+    #[must_use]
     pub fn qos(&self) -> QosClass {
         self.qos
     }

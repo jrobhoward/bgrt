@@ -19,7 +19,9 @@ on the state of the platforms; `docs/DESIGN.md` → *Scope: CPU and I/O now, GPU
 probably never* lists what would reopen it. Read it before adding either.
 
 See `docs/DESIGN.md` for the durable design and rationale, `docs/ROADMAP.md` for
-the phased plan and current status, and `CHANGELOG.md` for running project state.
+status and the release plan, `docs/BENCHMARKS.md` for measured results, and
+`CHANGELOG.md` for running project state. The README is the canonical reference
+for what each class does per OS.
 
 ## Commands
 
@@ -61,7 +63,7 @@ cargo build --release -p bgrt-bench && sudo ./target/release/bgrt-bench --durati
 Cargo workspace, edition 2024, `rust-version = 1.85.0`.
 
 - **`bgrt`** — the library.
-  - `qos` — `QosClass { Background, Utility, Default }`, the energy class applied per thread.
+  - `qos` — `QosClass { Background, Utility, Default }`, the energy class applied per thread. `#[non_exhaustive]`.
   - `backend/` — per-OS dispatch (`macos.rs`, `linux.rs`, `windows.rs`), each exposing `apply(QosClass)` acting on the *current* thread. macOS = `pthread_set_qos_class_self_np` (which also throttles disk I/O, for free); Linux = `setpriority` **+ `backend/ioprio.rs`** (`ioprio_set` → best-effort 7 for `Background`, 6 for `Utility`, untouched for `Default` — best-effort, never `IOPRIO_CLASS_IDLE`, same anti-starvation rule as `nice` over `SCHED_IDLE`); Windows = `THREAD_MODE_BACKGROUND_BEGIN` background mode (the only per-thread I/O lever; `Background` only, since it's all-or-nothing and would sink `Utility`'s CPU priority too) + memory-priority restore + EcoQoS via `SetThreadInformation` + `SetThreadPriority`. **Never `PROCESS_MODE_BACKGROUND_BEGIN`** — undocumented 32 MiB working-set cap, 250–800× slowdowns; Mozilla and Chromium both rejected it. "Already in that state" errors are swallowed so `apply` stays idempotent. A no-op fallback covers other platforms. `backend/uclamp.rs` adds an opt-in Linux `sched_setattr` utilization clamp (`clamp_current_thread`): for `Background`, caps `util_max` (~20%) so the cpufreq governor picks a lower clock even on homogeneous CPUs where `nice` has no frequency effect. Best-effort (no-op on old kernels/non-schedutil governors), unprivileged (only lowers), no-op off Linux.
   - `runtime` *(feature `tokio`, on by default)* — `RuntimeBuilder` → `Runtime` wrapping a multi-thread tokio runtime; applies `QosClass` to every runtime thread (workers + blocking pool) via `on_thread_start`. `spawn` / `spawn_blocking` / `block_on` / `handle` / `qos` / `shutdown_timeout` / `shutdown_background`. `current_thread(true)` switches to tokio's current-thread scheduler, driven on **one `bgrt`-spawned, classified OS thread** — never the caller's, because `on_thread_start` fires only for the blocking pool in that mode and reclassifying a foreign thread is unsound (one-way `nice` on Linux). That mode makes `Runtime::inner` a private `MultiThread | Dedicated` enum, routes `block_on` through `Handle::block_on`, and signals teardown to the driver over a `oneshot<ShutdownMode>`. See `docs/DESIGN.md` for the rationale.
   - `rayon_pool` *(feature `rayon`, off by default)* — `RayonBuilder` → `RayonPool` wrapping `rayon::ThreadPool`; applies `QosClass` in `start_handler`. `RayonPool` derefs to `rayon::ThreadPool`; use `pool.install(|| …)` to run `par_iter`/`join`/`scope` work on the quiet threads.
@@ -146,13 +148,31 @@ needs a doc comment. Doc examples that use a gated API must be `cfg`-gated too
 **Logging:** `tracing` macros.
 
 **Platform code:** keep OS-specific FFI behind the `backend/` modules,
-`cfg`-gated; platform-specific tests are `cfg`-gated too. There is **no CI in
-this repo** — the two cross-compile `clippy` commands above are the substitute,
-and they are the only check Windows and Linux code gets on the author's macOS
-hardware. Run them before calling a change done, and review FFI carefully.
+`cfg`-gated; platform-specific tests are `cfg`-gated too. **CI
+(`.github/workflows/ci.yml`) is where Linux and Windows code actually
+executes** — a 3-OS matrix running clippy, the full suite, four feature
+permutations, and an MSRV job. The two cross-compile `clippy` commands above are
+the *local* pre-push check on the author's macOS hardware: they prove the other
+backends type-check, not that they work. Run them before calling a change done,
+review FFI carefully, and expect CI to be the real verdict.
+
+**Semver:** `QosClass` and `Error` are `#[non_exhaustive]`. MSRV increases are
+minor bumps, never patches. `telemetry` is exempt from semver entirely. A Tokio
+or rayon major is a `bgrt` major — the crate wraps those runtimes rather than
+hiding them. All four commitments are stated in the README's *Stability* section
+and the crate-level rustdoc; keep them in sync.
+
+**Feature-gated public items need a docs.rs badge:** add
+`#[cfg_attr(docsrs, doc(cfg(feature = "…")))]` alongside the `#[cfg(feature =
+"…")]`. Without it, docs.rs (which builds `--all-features`) renders gated items
+as though they were always available.
 
 **Docs are part of "done":** land a dated entry in `CHANGELOG.md` (running
-project state), update the phase/status table in `docs/ROADMAP.md`, and put
-durable rationale — including negative results and honest caveats — in
-`docs/DESIGN.md`. The README carries the measured per-platform benchmark tables;
-refresh them when behaviour changes.
+project state), update `docs/ROADMAP.md` (status + release plan), and put durable
+rationale — including negative results and honest caveats — in `docs/DESIGN.md`.
+Measured results go in `docs/BENCHMARKS.md`; refresh them when behaviour changes.
+
+**Don't restate the QoS mapping table.** The canonical copy is in the README
+(*QoS classes*); this file's table is the contributor quick-reference and the only
+sanctioned duplicate. It previously lived in five places and had drifted in
+three. `docs/` links to the README rather than copying it — keep it that way.

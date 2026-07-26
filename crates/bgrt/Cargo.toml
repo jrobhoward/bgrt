@@ -17,8 +17,12 @@ workspace = true
 
 # Without this, docs.rs builds with default features only and the `rayon` and
 # `telemetry` APIs are absent from the published documentation entirely.
+# `--cfg docsrs` then turns on the `doc_cfg` badges, so a reader can tell which
+# of those items needs a feature flag — without it, `all-features` renders them
+# indistinguishable from the always-available API.
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # tokio is on by default: `RuntimeBuilder`/`Runtime` require it.

@@ -131,6 +131,15 @@ impl RuntimeBuilder {
     /// Prefer the default (`worker_threads(1)`) unless you specifically want
     /// single-threaded task semantics: it costs the same one thread.
     ///
+    /// # Deadlock hazard on drop
+    ///
+    /// Because `bgrt` owns the driver thread, dropping (or shutting down) a
+    /// current-thread [`Runtime`] **joins** that thread. Doing so from inside
+    /// the runtime's own blocking pool therefore deadlocks, where a plain Tokio
+    /// runtime would instead panic with "Cannot drop a runtime in a context
+    /// where blocking is not allowed". Drop the [`Runtime`] from the thread that
+    /// built it, or from any thread it does not own.
+    ///
     /// # Examples
     ///
     /// ```
@@ -434,11 +443,13 @@ impl Runtime {
     }
 
     /// A handle to the underlying Tokio runtime, for APIs that expect one.
+    #[must_use]
     pub fn handle(&self) -> &Handle {
         &self.handle
     }
 
     /// The energy [`QosClass`] applied to this runtime's threads.
+    #[must_use]
     pub fn qos(&self) -> QosClass {
         self.qos
     }
