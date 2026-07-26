@@ -231,8 +231,10 @@ mod macos {
 // Linux: worker threads should carry nice 19 (runs on CI / Linux hardware).
 #[cfg(target_os = "linux")]
 mod linux {
-    use crate::test_support::current_nice;
+    use crate::test_support::{current_ioprio, current_nice, ioprio_parts};
     use crate::{QosClass, RuntimeBuilder};
+
+    const IOPRIO_CLASS_BE: i32 = 2;
 
     #[test]
     fn background_runtime____spawn____worker_thread_is_nice_19() {
@@ -258,5 +260,32 @@ mod linux {
         let handle = rt.spawn(async { current_nice() });
         let nice = rt.block_on(async move { handle.await.unwrap() });
         assert_eq!(nice, 19);
+    }
+
+    // The disk half of the class, at the level users actually reach it: a task
+    // on a runtime worker, not a direct `apply` call.
+    #[test]
+    fn background_runtime____spawn____worker_thread_is_io_best_effort_7() {
+        let rt = RuntimeBuilder::new()
+            .qos(QosClass::Background)
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let handle = rt.spawn(async { current_ioprio() });
+        let prio = rt.block_on(async move { handle.await.unwrap() });
+        assert_eq!(ioprio_parts(prio), (IOPRIO_CLASS_BE, 7));
+    }
+
+    // `spawn_blocking` is where CPU- and disk-heavy work actually lands, so the
+    // blocking pool carrying the I/O class matters more than the workers do.
+    #[test]
+    fn background_runtime____spawn_blocking____pool_thread_is_io_best_effort_7() {
+        let rt = RuntimeBuilder::new()
+            .qos(QosClass::Background)
+            .build()
+            .unwrap();
+        let handle = rt.spawn_blocking(current_ioprio);
+        let prio = rt.block_on(async move { handle.await.unwrap() });
+        assert_eq!(ioprio_parts(prio), (IOPRIO_CLASS_BE, 7));
     }
 }

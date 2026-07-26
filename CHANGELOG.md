@@ -8,6 +8,38 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### I/O test coverage, and a negative result on macOS — 2026-07-25
+- **Tried making macOS I/O explicit; it does not work, and now we know why.**
+  The disk half of a class was assertable on Linux (`ioprio_get`) and indirectly
+  on Windows (memory-priority side effect), but not on macOS: `getiopolicy_np`
+  reports only a thread's *explicit override*, so a `QOS_CLASS_BACKGROUND` thread
+  reads `IOPOL_DEFAULT` while Darwin throttles it anyway. Calling
+  `setiopolicy_np` would have fixed that — the same reasoning that has Linux call
+  `ioprio_set` instead of trusting the nice-derived priority.
+  - **It costs the QoS class.** Measured: an explicit thread-scope I/O policy
+    drops `pthread_get_qos_class_np` from `QOS_CLASS_BACKGROUND` (0x9) to
+    `QOS_CLASS_UNSPECIFIED` (0x0), and re-applying the class afterwards does not
+    restore it. Neither ordering yields both. That would trade efficiency-core
+    confinement and the ~12× power result for a readable field — so the backend
+    deliberately never makes the call, and the implementation was reverted.
+  - The existing macOS QoS tests caught this on the first run, which is precisely
+    why they assert the class rather than just that `apply` returns `Ok`.
+  - **Now guarded by a regression test** asserting both that the QoS class
+    survives classification and that the I/O override stays unset.
+  - It also explains *why* Darwin bundles CPU and I/O, which is the observation
+    the single-`QosClass` API rests on: the QoS class **is** the I/O mechanism
+    there, not merely correlated with it.
+  - **Honest consequence:** macOS I/O coverage is structurally unassertable and
+    rests on Apple's documentation — a weaker footing than the other two
+    platforms. Documented in the README, `QosClass`, and DESIGN findings.
+- **Closed the I/O-vs-CPU test asymmetry.** `current_nice` was asserted at four
+  levels (backend `apply`, `spawn_thread`, runtime worker, rayon pool);
+  `current_ioprio` at one. Four new Linux tests bring the disk half level with
+  the CPU half: `spawn_thread`, rayon pool threads, runtime workers, and the
+  **blocking pool** — the last mattering most, since `spawn_blocking` is where
+  disk-heavy work actually lands. Previously we proved the syscall worked but
+  never that it reached the threads users touch.
+
 ### Windows block-I/O priority — the last platform gap — 2026-07-25
 - **`QosClass::Background` now lowers block-I/O priority on Windows**, via
   `SetThreadPriority(THREAD_MODE_BACKGROUND_BEGIN)` — the only documented

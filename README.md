@@ -333,9 +333,18 @@ mechanisms with three different caveats:
 
 | | Mechanism | Caveat |
 |---|---|---|
-| macOS | `QOS_CLASS_BACKGROUND` implies disk-I/O throttling — one call, both axes | none; `bgrt` makes no extra call |
+| macOS | `QOS_CLASS_BACKGROUND` implies disk-I/O throttling — one call, both axes | not directly observable — see below |
 | Linux | explicit `ioprio_set` to best-effort 7 (`Background`) / 6 (`Utility`) | **inert under some I/O schedulers** — see below |
 | Windows | background processing mode (`THREAD_MODE_BACKGROUND_BEGIN`) | `Background` only; weaker scheduling guarantee — see below |
+
+**macOS: the coverage is real but not directly assertable.** `getiopolicy_np`
+reports only a thread's *explicit* I/O override, so a background-QoS thread reads
+`IOPOL_DEFAULT` even while Darwin is throttling it. Setting the policy outright
+would make it readable — but measurably **opts the thread out of QoS entirely**,
+losing efficiency-core confinement and the energy win that is the whole point.
+So `bgrt` takes Darwin's bundled behaviour and leaves the override alone. The
+disk half of a class on macOS therefore rests on Apple's documentation rather
+than on a measurement.
 
 **Linux: whether it bites depends on your I/O scheduler.** BFQ honours it fully;
 `mq-deadline` since kernel 5.18; `none` — a common default for NVMe — ignores it

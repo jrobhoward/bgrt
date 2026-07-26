@@ -45,12 +45,22 @@ mod macos {
 // Linux: the spawned thread should carry nice 19 (runs on CI / Linux hardware).
 #[cfg(target_os = "linux")]
 mod linux {
-    use crate::test_support::current_nice;
+    use crate::test_support::{current_ioprio, current_nice, ioprio_parts};
     use crate::{QosClass, spawn_thread};
+
+    const IOPRIO_CLASS_BE: i32 = 2;
 
     #[test]
     fn spawn_thread____background____thread_is_nice_19() {
         let h = spawn_thread(QosClass::Background, current_nice);
         assert_eq!(h.join().unwrap(), 19);
+    }
+
+    // The disk half of the class has to reach spawned threads too, not just
+    // direct `apply` calls.
+    #[test]
+    fn spawn_thread____background____thread_is_io_best_effort_7() {
+        let h = spawn_thread(QosClass::Background, current_ioprio);
+        assert_eq!(ioprio_parts(h.join().unwrap()), (IOPRIO_CLASS_BE, 7));
     }
 }

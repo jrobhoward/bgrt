@@ -30,6 +30,28 @@ pub fn current_qos() -> u32 {
     qos
 }
 
+/// macOS `IOPOL_DEFAULT` from `<sys/resource.h>` — "no thread override".
+#[cfg(target_os = "macos")]
+pub const IOPOL_DEFAULT: i32 = 0;
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn getiopolicy_np(iotype: i32, scope: i32) -> i32;
+}
+
+/// Read the calling thread's disk I/O policy (macOS).
+///
+/// Reports the thread's *explicit override*, not the effective QoS-derived
+/// policy — a `QOS_CLASS_BACKGROUND` thread reads `IOPOL_DEFAULT` here even
+/// though Darwin is throttling its disk I/O. Used to assert that `bgrt` leaves
+/// the override alone; see `backend/macos_tests.rs`.
+#[cfg(target_os = "macos")]
+pub fn current_disk_iopolicy() -> i32 {
+    const IOPOL_TYPE_DISK: i32 = 0;
+    const IOPOL_SCOPE_THREAD: i32 = 1;
+    // SAFETY: reads the calling thread's disk I/O policy; no preconditions.
+    unsafe { getiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD) }
+}
+
 /// Read the calling thread's `uclamp.max` (0..=1024) from
 /// `/proc/thread-self/sched`, or `None` if the kernel lacks `CONFIG_UCLAMP_TASK`
 /// (in which case the line is absent and the clamp is inert).

@@ -158,7 +158,7 @@ Dev: `rstest`, `tempfile`. Release profile: `strip`, `lto`, `codegen-units = 1`.
 | 5 | Comparison harness (`bgrt-bench`)           | ✅ Done (table/JSON + verdict + integration test; macOS run, Linux/Windows cross-check) |
 | 6 | Docs, examples, polish                      | ✅ Done (examples run/lint clean; README incl. M1 results; CLAUDE.md refreshed) |
 | 7 | Road to 1.0 (CI, licensing, API freeze)     | ✅ Done — CI matrix, licenses/packaging, error causes, shutdown control, `current_thread`, Windows E/P telemetry. **Only hardware-blocked item left: running `--pin` on a real P+E Linux box, now documented as unmeasured rather than implied.** |
-| 8 | Block-I/O priority (`QosClass` covers disk) | ✅ Done — macOS free via QoS, Linux via `backend/ioprio.rs`, Windows via `THREAD_MODE_BACKGROUND_BEGIN` (+ memory-priority restore). Never the process-wide variant. Behaviour-tested in CI; **throughput under contention unmeasured on Windows hardware** |
+| 8 | Block-I/O priority (`QosClass` covers disk) | ✅ Done — macOS free via QoS, Linux via `backend/ioprio.rs`, Windows via `THREAD_MODE_BACKGROUND_BEGIN` (+ memory-priority restore). Never the process-wide variant. Behaviour-tested in CI at four levels (backend, `spawn_thread`, runtime workers + blocking pool, rayon pool); **throughput under contention unmeasured on Windows hardware**, and macOS I/O is structurally unassertable — `setiopolicy_np` would opt the thread out of QoS, so it is deliberately not called |
 
 Legend: ⬜ not started · 🔶 in progress · ✅ done. Update this table **and**
 `CHANGELOG.md` as each phase lands.

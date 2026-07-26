@@ -22,7 +22,9 @@
 /// # I/O coverage is not uniform
 ///
 /// - **macOS** — included automatically. `QOS_CLASS_BACKGROUND` implies disk-I/O
-///   throttling; `bgrt` makes no extra call.
+///   throttling; `bgrt` makes no extra call, and cannot: setting an explicit
+///   thread I/O policy permanently opts the thread out of QoS, costing E-core
+///   confinement. Darwin's bundling is the mechanism, not a coincidence.
 /// - **Linux** — an explicit `ioprio_set` to the best-effort class. Whether it
 ///   *bites* depends on the I/O scheduler: BFQ honours it fully, `mq-deadline`
 ///   since 5.18, and `none` — a common default for NVMe — ignores it entirely.

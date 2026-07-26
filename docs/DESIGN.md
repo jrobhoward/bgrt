@@ -416,6 +416,30 @@ objection, and it is the thing to re-test — not the conclusion.
   Threadripper, `energy_uj` reflects the entire package (all cores + memory
   controller + I/O die). Per-thread power attribution is not possible: variance
   between executors (<3%) is measurement noise, not a real signal.
+- **On macOS you cannot have both an explicit I/O policy and a QoS class.**
+  Setting a thread-scope disk policy with `setiopolicy_np` **permanently opts the
+  thread out of QoS**. Measured: `pthread_get_qos_class_np` drops from
+  `QOS_CLASS_BACKGROUND` (0x9) to `QOS_CLASS_UNSPECIFIED` (0x0) the moment the
+  I/O call lands, and re-applying the QoS class afterwards does *not* restore it
+  — neither ordering yields both.
+  - This was found by trying it. The motivation was good: `getiopolicy_np`
+    reports only a thread's *explicit override*, so a background-QoS thread reads
+    `IOPOL_DEFAULT` and the disk half of the class is not directly assertable on
+    macOS — the one platform where a test could run on the author's own hardware.
+    Setting it outright would have fixed that, mirroring why Linux calls
+    `ioprio_set` rather than trusting the nice-derived priority.
+  - **The price is the entire feature.** Losing the QoS class means losing E-core
+    confinement, the DVFS bias, and the ~12× power result that is this crate's
+    headline evidence — in exchange for a readable I/O field. Not a trade worth
+    making, so the backend deliberately never calls `setiopolicy_np`.
+  - Consequence: macOS's I/O coverage rests on Apple's documentation and is
+    *structurally* unassertable, a weaker footing than Linux (`ioprio_get`) or
+    Windows (memory-priority side effect). Recorded rather than papered over, and
+    guarded by a regression test that asserts the QoS class survives
+    classification and the I/O override stays unset.
+  - It also explains *why* Darwin bundles the two axes, which is the observation
+    the whole single-`QosClass` API rests on: the QoS class **is** the I/O
+    mechanism there, not merely correlated with it.
 - **`Background` throttles disk I/O on macOS for free — which is what set the
   I/O design.** `QOS_CLASS_BACKGROUND` is not purely a CPU hint: Darwin applies
   I/O throttling to threads in that class, in the same call. Discovering that is

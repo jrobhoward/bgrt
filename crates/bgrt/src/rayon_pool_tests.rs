@@ -32,8 +32,10 @@ fn builder____zero_threads____lets_rayon_decide() {
 // Linux: pool threads should carry nice 19 for Background.
 #[cfg(target_os = "linux")]
 mod linux {
-    use crate::test_support::current_nice;
+    use crate::test_support::{current_ioprio, current_nice, ioprio_parts};
     use crate::{QosClass, RayonBuilder};
+
+    const IOPRIO_CLASS_BE: i32 = 2;
 
     #[test]
     fn background_pool____install____threads_are_nice_19() {
@@ -44,6 +46,17 @@ mod linux {
             .unwrap();
         let nice = pool.install(current_nice);
         assert_eq!(nice, 19);
+    }
+
+    #[test]
+    fn background_pool____install____threads_are_io_best_effort_7() {
+        let pool = RayonBuilder::new()
+            .qos(QosClass::Background)
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let prio = pool.install(current_ioprio);
+        assert_eq!(ioprio_parts(prio), (IOPRIO_CLASS_BE, 7));
     }
 }
 
