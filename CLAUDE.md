@@ -11,7 +11,7 @@ macOS, Windows, and Linux. It **wraps** tokio rather than forking it.
 
 **Scope is CPU + block I/O.** One `QosClass` governs both — deliberately not two
 knobs, because Windows and macOS bundle the axes and an API can't honour
-combinations the OS won't express. Windows I/O is the one outstanding gap.
+combinations the OS won't express. All three platforms covered.
 **GPU is probably never** — no OS exposes a per-thread GPU QoS today, the per-API
 priorities that exist arbitrate contention rather than save energy, and GPU work
 belongs to a queue rather than to a classifiable thread. That answer is contingent
@@ -62,7 +62,7 @@ Cargo workspace, edition 2024, `rust-version = 1.85.0`.
 
 - **`bgrt`** — the library.
   - `qos` — `QosClass { Background, Utility, Default }`, the energy class applied per thread.
-  - `backend/` — per-OS dispatch (`macos.rs`, `linux.rs`, `windows.rs`), each exposing `apply(QosClass)` acting on the *current* thread. macOS = `pthread_set_qos_class_self_np` (which also throttles disk I/O, for free); Linux = `setpriority` **+ `backend/ioprio.rs`** (`ioprio_set` → best-effort 7 for `Background`, 6 for `Utility`, untouched for `Default` — best-effort, never `IOPRIO_CLASS_IDLE`, same anti-starvation rule as `nice` over `SCHED_IDLE`); Windows = EcoQoS via `SetThreadInformation` + `SetThreadPriority` (**CPU only — no I/O yet**). A no-op fallback covers other platforms. `backend/uclamp.rs` adds an opt-in Linux `sched_setattr` utilization clamp (`clamp_current_thread`): for `Background`, caps `util_max` (~20%) so the cpufreq governor picks a lower clock even on homogeneous CPUs where `nice` has no frequency effect. Best-effort (no-op on old kernels/non-schedutil governors), unprivileged (only lowers), no-op off Linux.
+  - `backend/` — per-OS dispatch (`macos.rs`, `linux.rs`, `windows.rs`), each exposing `apply(QosClass)` acting on the *current* thread. macOS = `pthread_set_qos_class_self_np` (which also throttles disk I/O, for free); Linux = `setpriority` **+ `backend/ioprio.rs`** (`ioprio_set` → best-effort 7 for `Background`, 6 for `Utility`, untouched for `Default` — best-effort, never `IOPRIO_CLASS_IDLE`, same anti-starvation rule as `nice` over `SCHED_IDLE`); Windows = `THREAD_MODE_BACKGROUND_BEGIN` background mode (the only per-thread I/O lever; `Background` only, since it's all-or-nothing and would sink `Utility`'s CPU priority too) + memory-priority restore + EcoQoS via `SetThreadInformation` + `SetThreadPriority`. **Never `PROCESS_MODE_BACKGROUND_BEGIN`** — undocumented 32 MiB working-set cap, 250–800× slowdowns; Mozilla and Chromium both rejected it. "Already in that state" errors are swallowed so `apply` stays idempotent. A no-op fallback covers other platforms. `backend/uclamp.rs` adds an opt-in Linux `sched_setattr` utilization clamp (`clamp_current_thread`): for `Background`, caps `util_max` (~20%) so the cpufreq governor picks a lower clock even on homogeneous CPUs where `nice` has no frequency effect. Best-effort (no-op on old kernels/non-schedutil governors), unprivileged (only lowers), no-op off Linux.
   - `runtime` *(feature `tokio`, on by default)* — `RuntimeBuilder` → `Runtime` wrapping a multi-thread tokio runtime; applies `QosClass` to every runtime thread (workers + blocking pool) via `on_thread_start`. `spawn` / `spawn_blocking` / `block_on` / `handle` / `qos` / `shutdown_timeout` / `shutdown_background`. `current_thread(true)` switches to tokio's current-thread scheduler, driven on **one `bgrt`-spawned, classified OS thread** — never the caller's, because `on_thread_start` fires only for the blocking pool in that mode and reclassifying a foreign thread is unsound (one-way `nice` on Linux). That mode makes `Runtime::inner` a private `MultiThread | Dedicated` enum, routes `block_on` through `Handle::block_on`, and signals teardown to the driver over a `oneshot<ShutdownMode>`. See `docs/DESIGN.md` for the rationale.
   - `rayon_pool` *(feature `rayon`, off by default)* — `RayonBuilder` → `RayonPool` wrapping `rayon::ThreadPool`; applies `QosClass` in `start_handler`. `RayonPool` derefs to `rayon::ThreadPool`; use `pool.install(|| …)` to run `par_iter`/`join`/`scope` work on the quiet threads.
   - `thread` — `spawn_thread` (infallible, like `std::thread::spawn`) and `ThreadBuilder` (`io::Result`, like `std::thread::Builder`); applies QoS at the top of the thread body. Available with no feature flags.
@@ -92,7 +92,7 @@ to all three or explain why not.
 
 | Class | macOS | Windows | Linux |
 |---|---|---|---|
-| `Background` | `QOS_CLASS_BACKGROUND` (E-core-confined, throttled I/O) | EcoQoS + `BELOW_NORMAL` | `nice(19)` + ioprio BE 7 + opt-in E-core affinity + opt-in `uclamp` frequency cap |
+| `Background` | `QOS_CLASS_BACKGROUND` (E-core-confined, throttled I/O) | background mode (throttled I/O) + EcoQoS + `BELOW_NORMAL` | `nice(19)` + ioprio BE 7 + opt-in E-core affinity + opt-in `uclamp` frequency cap |
 | `Utility` | `QOS_CLASS_UTILITY` | EcoQoS + `NORMAL` | `nice(10)` + ioprio BE 6 |
 | `Default` | passthrough | clear throttling | `nice(0)`, ioprio untouched |
 

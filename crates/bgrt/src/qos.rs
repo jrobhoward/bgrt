@@ -15,7 +15,7 @@
 ///
 /// | Class        | macOS                  | Windows               | Linux                                                        |
 /// |--------------|------------------------|-----------------------|--------------------------------------------------------------|
-/// | `Background` | `QOS_CLASS_BACKGROUND` | EcoQoS + below-normal | `nice(19)` + I/O best-effort 7 (+ opt-in E-core affinity, `uclamp` cap) |
+/// | `Background` | `QOS_CLASS_BACKGROUND` | background mode + EcoQoS + below-normal | `nice(19)` + I/O best-effort 7 (+ opt-in E-core affinity, `uclamp` cap) |
 /// | `Utility`    | `QOS_CLASS_UTILITY`    | EcoQoS + normal       | `nice(10)` + I/O best-effort 6                               |
 /// | `Default`    | passthrough            | clear throttling      | `nice(0)`, I/O left alone                                    |
 ///
@@ -27,11 +27,14 @@
 ///   *bites* depends on the I/O scheduler: BFQ honours it fully, `mq-deadline`
 ///   since 5.18, and `none` — a common default for NVMe — ignores it entirely.
 ///   Inert rather than wrong, like the `uclamp` cap.
-/// - **Windows** — **not yet covered.** EcoQoS and thread priority do not touch
-///   I/O priority; the documented mechanism that would
-///   (`THREAD_MODE_BACKGROUND_BEGIN`) also lowers CPU and memory priority, so it
-///   needs measuring against this crate's never-starve requirement before
-///   adoption. Tracked in `docs/DESIGN.md`.
+/// - **Windows** — `Background` only, via background processing mode
+///   (`THREAD_MODE_BACKGROUND_BEGIN`), the sole documented per-thread I/O lever.
+///   `Utility` gets no I/O reduction: the mode is all-or-nothing and would drag
+///   CPU priority down with it, which is precisely what separates `Utility` from
+///   `Background`. Microsoft documents that a background-mode thread "may not be
+///   scheduled promptly, but it will never be starved" — weaker than Linux's
+///   weighted-fair share, so expect low throughput under sustained foreground
+///   load.
 ///
 /// On Linux the base CPU mapping is niceness; efficiency-core affinity and a
 /// `uclamp` frequency cap are both opt-in per builder (`pin_efficiency_cores`,

@@ -10,9 +10,8 @@ it onto a quiet executor.
   `Default`, mapped to each OS's native facility: macOS QoS classes, Windows
   EcoQoS, Linux `nice` + `ioprio` (+ opt-in efficiency-core affinity and `uclamp`
   frequency cap).
-- **CPU *and* disk** — one class covers both. Quiet work doesn't thrash the disk
-  either (macOS and Linux today; [Windows I/O is not yet
-  covered](#io-priority-is-not-yet-covered-on-windows)).
+- **CPU *and* disk** — one class covers both, on all three platforms. Quiet work
+  doesn't thrash the disk either.
 - **No admin required** — the library only ever *lowers* its own threads' demands.
 - **Wraps tokio, integrates with rayon** — an energy-classified async runtime,
   a quiet rayon thread pool for parallel iterators, and a quiet OS-thread spawner
@@ -86,7 +85,7 @@ Runnable examples (`cargo run --example <name> -p bgrt`):
 
 | Class | macOS | Windows | Linux |
 |---|---|---|---|
-| `Background` | `QOS_CLASS_BACKGROUND` (efficiency cores, throttled I/O) | EcoQoS + below-normal | `nice(19)` + I/O best-effort 7 + opt-in E-core affinity + opt-in `uclamp` frequency cap |
+| `Background` | `QOS_CLASS_BACKGROUND` (efficiency cores, throttled I/O) | background mode (throttled I/O) + EcoQoS + below-normal | `nice(19)` + I/O best-effort 7 + opt-in E-core affinity + opt-in `uclamp` frequency cap |
 | `Utility` | `QOS_CLASS_UTILITY` | EcoQoS + normal | `nice(10)` + I/O best-effort 6 |
 | `Default` | none | none | `nice(0)`, I/O untouched |
 
@@ -327,29 +326,48 @@ that is EcoQoS's job, not ours.
 - **macOS join-promotion:** synchronously waiting on a background thread from a
   higher-QoS thread can promote it off the efficiency cores (see the benchmarking
   note above). Async `await` on a background runtime does not.
-### I/O priority is not yet covered on Windows
+### Disk I/O: what each platform actually does
 
-A `QosClass` covers CPU *and* block I/O, but only two platforms deliver both
-today:
+A `QosClass` covers CPU *and* block I/O everywhere, but through three different
+mechanisms with three different caveats:
 
-| | CPU | Block I/O | via |
-|---|---|---|---|
-| macOS | ✅ | ✅ | `QOS_CLASS_BACKGROUND` implies disk-I/O throttling — one call, both axes |
-| Linux | ✅ | ✅ | `setpriority` + an explicit `ioprio_set` to best-effort 7 / 6 |
-| Windows | ✅ | ❌ | EcoQoS and thread priority don't touch I/O priority |
+| | Mechanism | Caveat |
+|---|---|---|
+| macOS | `QOS_CLASS_BACKGROUND` implies disk-I/O throttling — one call, both axes | none; `bgrt` makes no extra call |
+| Linux | explicit `ioprio_set` to best-effort 7 (`Background`) / 6 (`Utility`) | **inert under some I/O schedulers** — see below |
+| Windows | background processing mode (`THREAD_MODE_BACKGROUND_BEGIN`) | `Background` only; weaker scheduling guarantee — see below |
 
-The Windows mechanism that *would* cover it,
-`SetThreadPriority(THREAD_MODE_BACKGROUND_BEGIN)`, also lowers CPU and memory
-priority in the same call. Adopting it would change shipped `Background` CPU
-behaviour rather than just adding an axis, and it has to be measured against this
-crate's never-starve requirement first — on real Windows hardware, which the
-author doesn't have. Deliberately deferred rather than guessed at.
+**Linux: whether it bites depends on your I/O scheduler.** BFQ honours it fully;
+`mq-deadline` since kernel 5.18; `none` — a common default for NVMe — ignores it
+entirely, making the call a no-op. Same shape of caveat as `uclamp` needing
+`schedutil`. Check with `cat /sys/block/<dev>/queue/scheduler`.
 
-**On Linux, whether the priority bites depends on your I/O scheduler.** BFQ
-honours it fully; `mq-deadline` since kernel 5.18; `none` — a common default for
-NVMe — ignores it entirely, making the call a no-op. Same shape of caveat as
-`uclamp` needing `schedutil`. Check with
-`cat /sys/block/<dev>/queue/scheduler`.
+**Windows: `Background` gets quiet I/O, `Utility` does not.** Background
+processing mode is the only documented per-thread I/O lever, and it is
+all-or-nothing — taking it for `Utility` would drag CPU priority down too, which
+is exactly what distinguishes the two classes.
+
+Microsoft documents that a thread in background mode *"may not be scheduled
+promptly, but it will never be starved"*. That satisfies this crate's
+never-starve rule, but it is a **weaker promise than Linux's weighted-fair
+share**: Windows delivers it by periodically boosting a thread that has been
+denied the CPU for too long, so expect poor throughput under sustained
+foreground load. That is the quiet end of the range, by design — but it has not
+been *measured* on real Windows hardware, only reasoned from the documentation
+and from what Chromium ships.
+
+Two further Windows notes:
+
+- **`bgrt` never uses `PROCESS_MODE_BACKGROUND_BEGIN`**, the process-wide
+  sibling. It carries an undocumented hard 32 MiB working-set cap that has been
+  measured making programs 250–800× slower; Mozilla investigated it and closed
+  the idea WONTFIX, and Chromium dropped it. Both recommended the per-thread flag
+  `bgrt` uses instead. Since `bgrt` classifies threads rather than processes, the
+  dangerous variant is unreachable by design.
+- **Background mode also lowers memory priority**, so the thread's pages get
+  trimmed first. `bgrt` puts memory priority back to normal immediately — trimmed
+  pages get faulted back in, costing the very disk I/O this class is trying to
+  avoid. Chromium does the same thing for the same reason.
 
 - **`bgrt` classifies CPU and disk work, not GPU work** — and GPU is very
   unlikely to ever be in scope; see
@@ -362,11 +380,11 @@ NVMe — ignores it entirely, making the call a no-op. Same shape of caveat as
 
 ## Scope: what `bgrt` is not
 
-**I/O priority — in scope, and shipped for macOS and Linux.** A `QosClass`
-governs disk demands as well as CPU. Windows is the remaining gap; see the
-limitation above. Split CPU/I/O control (asking for quiet CPU but normal I/O, or
-the reverse) is *not* offered, because two of three platforms can't express it —
-reasoning in
+**I/O priority — in scope and shipped on all three platforms.** A `QosClass`
+governs disk demands as well as CPU; see the section above for the per-platform
+mechanisms and caveats. Split CPU/I/O control (asking for quiet CPU but normal
+I/O, or the reverse) is *not* offered, because two of three platforms can't
+express it — reasoning in
 [`docs/DESIGN.md`](docs/DESIGN.md#scope-cpu-and-io-now-gpu-probably-never).
 
 **GPU — probably never.** Not on the roadmap, and it would take a shift in the

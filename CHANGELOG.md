@@ -8,6 +8,52 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Windows block-I/O priority — the last platform gap — 2026-07-25
+- **`QosClass::Background` now lowers block-I/O priority on Windows**, via
+  `SetThreadPriority(THREAD_MODE_BACKGROUND_BEGIN)` — the only documented
+  per-thread I/O lever there. All three platforms now cover CPU *and* disk.
+- **Unblocked by research, not hardware.** The three questions that had deferred
+  this were all answerable from documentation and from what Chromium ships:
+  - *Composes with EcoQoS?* **Yes.** Chromium applies background mode and
+    `THREAD_POWER_THROTTLING_EXECUTION_SPEED` to the same threads; they are
+    independent mechanisms, so the existing EcoQoS call is untouched.
+  - *Starvation?* Microsoft documents that such a thread "may not be scheduled
+    promptly, but it will never be starved" — satisfying the hard never-starve
+    requirement. Recorded with its hedge: that is weaker than Linux's
+    proportional share, so poor throughput under sustained foreground load is
+    expected and intended.
+  - *Begin/end pairing?* Windows reports "already in that state" as an **error**
+    (`ERROR_THREAD_MODE_ALREADY_BACKGROUND` / `..._NOT_BACKGROUND`). Both are now
+    swallowed, which is what keeps `apply` idempotent — it can legitimately run
+    more than once on one thread.
+- **`PROCESS_MODE_BACKGROUND_BEGIN` is never used, and that is the crux.** The
+  process-wide sibling carries an undocumented hard 32 MiB working-set cap,
+  measured making real programs 250–800× slower; Mozilla investigated it and
+  closed the idea WONTFIX, Chromium dropped it, and both recommended the
+  per-thread flag used here. Nearly every horror story about "Windows background
+  mode" is about the process API. `bgrt` classifies threads, not processes, so
+  the dangerous variant is unreachable by design.
+- **Memory priority is deliberately restored.** Background mode also drops the
+  thread to `MEMORY_PRIORITY_VERY_LOW`, so its pages are trimmed first — a
+  latency hazard rather than an energy win, since trimmed pages fault back in at
+  the cost of the very disk I/O this class avoids. Reset to normal immediately
+  after; Chromium does the same.
+- **`Utility` gets no I/O reduction on Windows, on purpose.** The mode is
+  all-or-nothing and would drag CPU priority down with it, which is exactly what
+  separates `Utility` from `Background`. An honest coverage gap rather than a
+  misleading knob — and after-the-fact support for the single-`QosClass` design,
+  since a split CPU/I/O API could not have been honoured here either.
+- **Tests (4 new, CI-only):** the raw mode measurably lowers memory priority —
+  which stands in for the un-readable I/O priority and proves the mode takes
+  effect at all — `apply` then restores it, re-applying `Background` is
+  idempotent, and `Utility`/`Default` on a fresh thread tolerate not having been
+  in background mode. The first of these was added specifically because
+  asserting "memory priority is normal" alone would pass just as happily if the
+  mode had never been entered.
+- **Still unmeasured:** throughput under contention on real Windows hardware.
+  Behaviour is tested in CI; performance is reasoned, not observed. Same standing
+  as the hybrid-Linux pinning path, and labelled the same way.
+
 ### A `QosClass` now covers block I/O, not just CPU — 2026-07-25
 - **`QosClass` is a *resource* class.** Linux gained `backend/ioprio.rs`:
   `ioprio_set` to best-effort level **7** for `Background`, **6** for `Utility`,

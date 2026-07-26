@@ -220,7 +220,7 @@ already present, through mechanisms the crate was using for other reasons:
 |---|---|---|
 | macOS | already throttled | `QOS_CLASS_BACKGROUND` implies disk-I/O throttling — one call, both axes |
 | Linux | probably already correct | with no explicit I/O priority the kernel derives a best-effort level from niceness, `(nice + 20) / 5` → `nice(19)` = level 7, `nice(10)` = level 6 |
-| Windows | **not covered** | EcoQoS and thread priority don't touch I/O priority |
+| Windows | **the one real gap** (since closed) | EcoQoS and thread priority don't touch I/O priority |
 
 That derivation lands on exactly the mapping we would have chosen by hand, which
 made "add I/O priority" one platform's gap plus a documentation commitment rather
@@ -251,14 +251,46 @@ is to measure rather than assume, and the implicit version cannot be asserted.
 is the I/O scheduler's business: BFQ fully, `mq-deadline` since 5.18, `none` — a
 common NVMe default — not at all. Documented rather than hidden.
 
-**Windows deferred deliberately.** `SetThreadPriority(THREAD_MODE_BACKGROUND_BEGIN)`
-is the documented mechanism, but it also lowers CPU and memory priority in the
-same call, so adopting it changes shipped `Background` CPU behaviour rather than
-just adding an axis. Three questions need answering on real Windows hardware
-first: whether it composes with the existing `THREAD_POWER_THROTTLING_EXECUTION_SPEED`
-call or overrides it; whether background mode is still weighted-fair (never-starve
-is a hard requirement here); and whether the begin/end pairing matters when only
-`BEGIN` is ever called, at thread start.
+**Windows, resolved by research rather than hardware.** The gap is now closed
+with `SetThreadPriority(THREAD_MODE_BACKGROUND_BEGIN)` for `Background`. Three
+questions had been blocking it, and all three turned out to be answerable from
+documentation and from what Chromium ships:
+
+1. *Does it compose with the existing EcoQoS call?* **Yes** — Chromium applies
+   `THREAD_MODE_BACKGROUND_BEGIN` and `THREAD_POWER_THROTTLING_EXECUTION_SPEED`
+   to the same threads. They are independent mechanisms.
+2. *Is it still weighted-fair — does it starve?* Microsoft documents that such a
+   thread "may not be scheduled promptly, but it will never be starved". That
+   satisfies the hard requirement, but note the hedge: never-starved is weaker
+   than Linux's proportional share, delivered by periodically boosting a thread
+   denied the CPU for too long. Poor throughput under sustained foreground load
+   is expected and intended.
+3. *Does the begin/end pairing matter?* Only in that Windows reports
+   "already in that state" as an **error** — `ERROR_THREAD_MODE_ALREADY_BACKGROUND`
+   / `ERROR_THREAD_MODE_NOT_BACKGROUND`. Since `apply` may legitimately run more
+   than once on a thread, both codes are swallowed; that is what makes `apply`
+   idempotent on Windows. Thread exit cleans up, so no explicit `END` is needed.
+
+**Never the process-wide sibling.** `PROCESS_MODE_BACKGROUND_BEGIN` carries an
+undocumented hard 32 MiB cap on the process working set, measured making real
+programs 250–800× slower. Mozilla investigated it and closed the idea WONTFIX;
+Chromium dropped it; both recommended the per-thread flag instead. Because `bgrt`
+classifies threads and not processes, the dangerous variant is not merely avoided
+— it is unreachable by design. This distinction is the whole reason the Windows
+half looked riskier than it was: nearly every horror story about "Windows
+background mode" is about the process API.
+
+**Memory priority is deliberately undone.** Background mode also drops the thread
+to `MEMORY_PRIORITY_VERY_LOW`, so its pages are trimmed first. That is a latency
+hazard rather than an energy win — trimmed pages fault back in, costing the very
+disk I/O the class is trying to avoid — so `bgrt` resets it to normal right
+afterwards. Chromium does the same.
+
+**Unmeasured, and labelled as such.** CI executes the behavioural tests on
+`windows-latest` (the mode is entered, memory priority is lowered by it and then
+restored, re-application is idempotent), but nobody has measured *throughput*
+under contention on real Windows hardware. Same standing as the hybrid-Linux
+pinning path: implemented, behaviour-tested, performance unverified.
 
 #### Why one knob and not two
 
@@ -278,7 +310,11 @@ order of weight:
    it bundles them, a split API would have been contradicted by the reference
    platform on day one.
 3. **It keeps the builder trio intact** — no fourth knob across `RuntimeBuilder`,
-   `RayonBuilder`, and `ThreadBuilder`.
+   `RayonBuilder`, and `ThreadBuilder`. Windows reinforces this after the fact:
+   its I/O lever is all-or-nothing, so even `Utility` cannot get quiet I/O
+   without also surrendering CPU priority. `Utility` therefore gets no I/O
+   reduction there — a coverage gap that is honest, where a split API would have
+   been a lie.
 4. **The escape hatch stays additive.** If split control is ever genuinely needed,
    `io_class(Option<QosClass>)` can be added as an *override* documented "no
    effect on Windows" — exactly the mould of `pin_efficiency_cores` and
