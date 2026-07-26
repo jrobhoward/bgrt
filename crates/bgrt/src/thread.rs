@@ -3,6 +3,15 @@
 //! Use [`spawn_thread`] for a quick classified thread (mirrors
 //! [`std::thread::spawn`]), or [`ThreadBuilder`] to also set a name, stack size,
 //! or efficiency-core pinning (mirrors [`std::thread::Builder`]).
+//!
+//! # The classification stops at this thread
+//!
+//! Threads spawned *by* the classified thread inherit it only on Linux; on macOS
+//! and Windows they start unclassified. So running a library that manages its
+//! own worker threads (RocksDB's compaction pool, for instance) on a
+//! `Background` thread does **not** make that library's threads quiet on two of
+//! three platforms — and their classification APIs are current-thread-only, so
+//! it cannot be corrected from outside either. See [`QosClass`] and the README.
 
 use std::thread::{self, JoinHandle};
 

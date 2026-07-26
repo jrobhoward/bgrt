@@ -8,6 +8,35 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Thread-classification inheritance: measured and documented — 2026-07-25
+- **A `QosClass` does not follow threads spawned by a classified thread, except
+  on Linux.** Previously undocumented, and the failure is silent. Measured:
+
+  | | Child threads inherit? |
+  |---|---|
+  | Linux | ✅ yes — `nice`/ioprio/affinity/`uclamp` are copied by `clone()` |
+  | macOS | ❌ no — child of a `QOS_CLASS_BACKGROUND` (0x09) thread reports `QOS_CLASS_DEFAULT` (0x15) |
+  | Windows | ❌ no — "all threads initially start at `THREAD_PRIORITY_NORMAL`" |
+
+- **This bounds what the crate can promise**, so it is now stated wherever a user
+  would form the wrong expectation: a README limitation section with the table
+  and workarounds, plus notes on `QosClass` and the `thread` module. The
+  motivating case is handing a `Background` thread to a library that manages its
+  own pool — RocksDB's compaction and flush threads — which stays at full
+  priority on two of three platforms.
+- **It cannot be corrected after the fact** on macOS or Windows: both
+  `pthread_set_qos_class_self_np` and `THREAD_MODE_BACKGROUND_BEGIN` act only on
+  the *calling* thread, so enumerating a library's threads would not help. Only
+  Linux can target another task by tid. That is why classification has to happen
+  at thread creation — which is what the builders' thread hooks are for.
+- **Three new tests, one per platform**, asserting each OS's actual behaviour
+  rather than leaving the table resting on documentation. Each carries a failure
+  message pointing at the README table, so an OS behaviour change surfaces as
+  "the docs are now wrong" rather than a puzzling assertion.
+- `test_support` gained `QOS_CLASS_DEFAULT` and a shared
+  `current_thread_priority()` for Windows (previously duplicated inside
+  `windows_tests.rs`).
+
 ### I/O test coverage, and a negative result on macOS — 2026-07-25
 - **Tried making macOS I/O explicit; it does not work, and now we know why.**
   The disk half of a class was assertable on Linux (`ioprio_get`) and indirectly

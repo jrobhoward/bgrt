@@ -10,18 +10,13 @@
 use core::ffi::c_void;
 
 use windows_sys::Win32::System::Threading::{
-    GetCurrentThread, GetThreadInformation, GetThreadPriority, MEMORY_PRIORITY_INFORMATION,
-    MEMORY_PRIORITY_NORMAL, THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL,
-    ThreadMemoryPriority,
+    GetCurrentThread, GetThreadInformation, MEMORY_PRIORITY_INFORMATION, MEMORY_PRIORITY_NORMAL,
+    THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL, ThreadMemoryPriority,
 };
 
 use super::{apply, set_background_mode};
 use crate::qos::QosClass;
-
-fn current_priority() -> i32 {
-    // SAFETY: reads the priority of the current-thread pseudo-handle.
-    unsafe { GetThreadPriority(GetCurrentThread()) }
-}
+use crate::test_support::current_thread_priority as current_priority;
 
 /// Read the calling thread's memory priority. Background mode lowers this as a
 /// side effect, so it doubles as evidence the mode was entered.

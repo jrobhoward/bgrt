@@ -38,6 +38,17 @@
 ///   weighted-fair share, so expect low throughput under sustained foreground
 ///   load.
 ///
+/// # Threads spawned by classified threads
+///
+/// A class applies to the thread it was applied to — **not** to threads that
+/// code running on it goes on to create. Whether a child inherits is an OS
+/// decision, and the platforms disagree: Linux inherits (`nice` and I/O priority
+/// are copied by `clone()`), macOS and Windows do not (a child reports
+/// `QOS_CLASS_DEFAULT` / `THREAD_PRIORITY_NORMAL`). Nor can it be fixed
+/// afterwards on those two — their classification APIs act only on the *calling*
+/// thread. Hand libraries a `bgrt` runtime or pool where you can; see the README
+/// for the full table and the workarounds.
+///
 /// On Linux the base CPU mapping is niceness; efficiency-core affinity and a
 /// `uclamp` frequency cap are both opt-in per builder (`pin_efficiency_cores`,
 /// `clamp_frequency`). The `uclamp` cap is the only lever that lowers clocks on

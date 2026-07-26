@@ -81,6 +81,13 @@ thread, then apply QoS → pin → clamp at the top of every worker thread
 it that way. Both extra knobs default to **off** and only have an effect on Linux.
 `spawn_thread(class, f)` is the no-knobs shortcut. When adding an option, add it
 to all three or explain why not.
+
+**Classification stops at the thread `bgrt` created.** Child threads inherit only
+on Linux; macOS and Windows start them unclassified, and neither can be fixed
+from outside (their APIs are current-thread-only). This is why the thread hooks
+matter: classification must happen *at creation*, by whoever creates the thread.
+Asserted per-platform in `thread_tests.rs`; don't weaken those tests without
+updating the README table they point at.
 - **`bgrt-bench`** — the comparison harness binary (enables `bgrt/telemetry`).
   - `workload` — CPU-bound, self-sampling loop; returns work units (throughput).
   - `runner` — `Executor` (Default/Utility/Background/BackgroundThreads) → `RunResult` (wall, work, aggregate, energy, powermetrics). On macOS the threads runner matches the waiter's QoS during `join` (avoids the kernel promoting background threads off E-cores).

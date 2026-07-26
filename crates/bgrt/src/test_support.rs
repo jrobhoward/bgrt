@@ -9,6 +9,9 @@ pub const QOS_CLASS_BACKGROUND: u32 = 0x09;
 /// macOS `QOS_CLASS_UTILITY`.
 #[cfg(target_os = "macos")]
 pub const QOS_CLASS_UTILITY: u32 = 0x11;
+/// macOS `QOS_CLASS_DEFAULT` — what an unclassified thread reports.
+#[cfg(target_os = "macos")]
+pub const QOS_CLASS_DEFAULT: u32 = 0x15;
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
@@ -100,4 +103,12 @@ pub fn current_nice() -> i32 {
         assert_eq!(errno, 0, "getpriority failed: errno {errno}");
         v
     }
+}
+
+/// Read the calling thread's priority (Windows).
+#[cfg(target_os = "windows")]
+pub fn current_thread_priority() -> i32 {
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadPriority};
+    // SAFETY: reads the priority of the current-thread pseudo-handle.
+    unsafe { GetThreadPriority(GetCurrentThread()) }
 }

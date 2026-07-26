@@ -378,6 +378,43 @@ Two further Windows notes:
   pages get faulted back in, costing the very disk I/O this class is trying to
   avoid. Chromium does the same thing for the same reason.
 
+### Classification does not follow threads your dependencies spawn
+
+**A `QosClass` applies to the thread `bgrt` created — not to threads that code
+running on it goes on to create.** If you hand a `Background` thread to a library
+that spawns its own workers (RocksDB compaction and flush threads, an embedded
+HTTP server, any pool with its own threads), whether those stay quiet depends
+entirely on the OS:
+
+| | Child threads inherit? | Why |
+|---|---|---|
+| Linux | ✅ yes | `nice`, I/O priority, affinity and `uclamp` live in `task_struct` and are copied by `clone()` |
+| macOS | ❌ **no** | Darwin propagates QoS through dispatch queues and `pthread_attr_set_qos_class_np`, not plain `pthread_create` — a child reports `QOS_CLASS_DEFAULT` |
+| Windows | ❌ **no** | *"All threads initially start at `THREAD_PRIORITY_NORMAL`"*; background mode and EcoQoS are per-thread |
+
+All three rows are asserted by tests that run in CI, so this table is measured
+rather than assumed.
+
+**You usually cannot fix it after the fact.** macOS `pthread_set_qos_class_self_np`
+and Windows `THREAD_MODE_BACKGROUND_BEGIN` are *current-thread only* — Windows
+documents that the background flags "can be specified only if `hThread` is a
+handle to the current thread". Even if you enumerated the library's threads, you
+could not classify them. Only Linux lets you target another task by tid.
+
+What does work, in order of preference:
+
+1. **Give the library a thread hook.** Anything built on tokio or rayon is
+   already covered — hand it a `bgrt` runtime or pool and every worker, including
+   tokio's blocking pool, is classified at thread start. Some C libraries expose
+   a thread-factory callback that can call `bgrt::apply`.
+2. **Isolate it in its own process** and classify the process rather than a
+   thread. The only approach that reliably catches threads you don't control.
+   (On Windows use `SetPriorityClass(BELOW_NORMAL_PRIORITY_CLASS)` — *not*
+   `PROCESS_MODE_BACKGROUND_BEGIN`, see the note above.)
+3. **Measure before assuming it matters.** If the library's own threads do a
+   small share of the work, classifying yours may still get most of the benefit —
+   but verify, because the failure is silent.
+
 - **`bgrt` classifies CPU and disk work, not GPU work** — and GPU is very
   unlikely to ever be in scope; see
   [Scope: what `bgrt` is not](#scope-what-bgrt-is-not) below.

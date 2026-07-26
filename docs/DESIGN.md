@@ -416,6 +416,27 @@ objection, and it is the thing to re-test — not the conclusion.
   Threadripper, `energy_uj` reflects the entire package (all cores + memory
   controller + I/O die). Per-thread power attribution is not possible: variance
   between executors (<3%) is measurement noise, not a real signal.
+- **Classification does not follow threads spawned by a classified thread —
+  except on Linux.** Measured, and the platforms invert their usual roles:
+  Linux inherits (`nice`, I/O priority, affinity and `uclamp` live in
+  `task_struct` and are copied by `clone()`), while macOS and Windows do not — a
+  child of a `QOS_CLASS_BACKGROUND` (0x09) thread reports `QOS_CLASS_DEFAULT`
+  (0x15), and Windows starts every thread at `THREAD_PRIORITY_NORMAL`.
+  - **This bounds what the crate can promise.** A `QosClass` covers the thread
+    `bgrt` created, not the work graph beneath it. Handing a `Background` thread
+    to a library that manages its own pool — RocksDB's compaction and flush
+    threads being the motivating case — leaves that pool at full priority on two
+    of three platforms, silently.
+  - **It cannot be repaired from outside.** `pthread_set_qos_class_self_np` and
+    `THREAD_MODE_BACKGROUND_BEGIN` both act only on the *calling* thread, so even
+    enumerating a library's threads would not help. Only Linux can target another
+    task by tid. This is why the two-runtime pattern and the builders' thread
+    hooks are the load-bearing part of the design: classification has to happen
+    *at thread creation*, by whoever creates the thread.
+  - The honest guidance is therefore: prefer libraries that accept a thread
+    factory or run on a `bgrt` runtime/pool; otherwise isolate the work in its
+    own process and classify the process. Recorded in the README with the full
+    table, and asserted per-platform in CI so the table stays true.
 - **On macOS you cannot have both an explicit I/O policy and a QoS class.**
   Setting a thread-scope disk policy with `setiopolicy_np` **permanently opts the
   thread out of QoS**. Measured: `pthread_get_qos_class_np` drops from
