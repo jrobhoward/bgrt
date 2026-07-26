@@ -1,5 +1,5 @@
-//! Formatting the comparison results as a table or JSON, plus the headline
-//! "did the quiet class stay cooler?" and "did it yield the disk?" checks.
+//! Formatting the comparison results as a table or JSON, plus the
+//! "did the low-priority class stay cooler?" and "did it yield the disk?" checks.
 
 use serde::Serialize;
 
@@ -113,7 +113,7 @@ pub fn json(summaries: &[Summary]) -> Result<String, serde_json::Error> {
 }
 
 /// Whether the `background` executor's peak frequency stayed at or below the
-/// `default` executor's — the headline "didn't spin up the fans" check.
+/// `default` executor's — the "didn't spin up the fans" check.
 ///
 /// Returns `None` if either executor is absent or lacks frequency data (e.g. on
 /// macOS without `powermetrics`), so callers can skip rather than fail.
@@ -142,7 +142,7 @@ pub struct IoSummary {
     /// Foreground throughput during that contended window (MiB/s).
     pub foreground_mib_s: f64,
     /// Foreground throughput as a percentage of its uncontended baseline — the
-    /// headline "did the quiet class get out of the way?" figure. `None` if the
+    /// "did the low-priority class get out of the way?" figure. `None` if the
     /// baseline measured nothing.
     pub foreground_protection_pct: Option<f64>,
     /// Executor reads per second while alone.
@@ -262,7 +262,7 @@ pub fn device_saturated(rows: &[IoSummary]) -> bool {
 }
 
 /// Whether the `background` executor left the foreground more disk than the
-/// `default` executor did — the headline "quiet work yields the device" check.
+/// `default` executor did — the "low-priority work yields the device" check.
 ///
 /// Returns `None` if either executor is absent or the baseline was unmeasurable,
 /// so callers can skip rather than fail.

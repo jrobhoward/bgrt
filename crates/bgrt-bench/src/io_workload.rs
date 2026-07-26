@@ -61,7 +61,7 @@ pub fn run_reader(path: &Path, cfg: IoConfig, seed: u64, gate: Instant) -> Worke
 
 /// The measured loop, once a handle is open.
 ///
-/// The wait for `gate` is spent **reading**, not sleeping. A sleeping thread has
+/// The wait for `gate` is spent *reading*, not sleeping. A sleeping thread has
 /// to be woken, and macOS defers timers for `QOS_CLASS_BACKGROUND` threads — a
 /// background reader handed a sleep would wake after its window had already
 /// closed and record nothing. Reading through the warm-up keeps every worker

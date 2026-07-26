@@ -1,5 +1,5 @@
 //! `bgrt-bench` — compare execution time, throughput, core placement, CPU
-//! frequency, energy, and **disk behaviour** across bgrt executors.
+//! frequency, energy, and disk behaviour across bgrt executors.
 //!
 //! The CPU workload runs the same compute loop on each executor for a fixed
 //! duration while self-sampling telemetry (and, with `--mac-power`, sampling

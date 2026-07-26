@@ -1,4 +1,4 @@
-//! Run a quiet async task on a Background-class runtime.
+//! Run a low-priority async task on a Background-class runtime.
 //!
 //! ```text
 //! cargo run --example background_task -p bgrt

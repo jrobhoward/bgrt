@@ -1,4 +1,4 @@
-//! Tests for the quiet-thread spawn API.
+//! Tests for the low-priority thread spawn API.
 #![allow(non_snake_case)]
 
 use crate::{QosClass, ThreadBuilder, spawn_thread};
@@ -69,14 +69,14 @@ mod linux {
 //
 // Does a thread spawned *by* a classified thread inherit the classification?
 // This is the RocksDB question: a library handed a `Background` thread will
-// spawn its own compaction/flush workers, and whether those stay quiet decides
+// spawn its own compaction/flush workers, and whether those stay lowered decides
 // whether the classification means anything for that workload.
 //
 // The three platforms disagree, so each assertion below is deliberate, not a
 // copy of its neighbour. They exist to pin the behaviour down in CI rather than
 // leave the README's table resting on documentation.
 
-/// macOS: **not** inherited. Measured — a child of a `Background` (0x09) or
+/// macOS: *not* inherited. Measured — a child of a `Background` (0x09) or
 /// `Utility` (0x11) thread reports `QOS_CLASS_DEFAULT` (0x15). Darwin propagates
 /// QoS through dispatch queues and `pthread_attr_set_qos_class_np`, not through
 /// plain `pthread_create`.
@@ -101,8 +101,8 @@ fn spawn_thread____child_thread____does_not_inherit_the_qos_class() {
     );
 }
 
-/// Linux: **inherited**. `nice` and I/O priority live in `task_struct` and are
-/// copied by `clone()`, so a library's own threads stay quiet for free. This is
+/// Linux: *inherited*. `nice` and I/O priority live in `task_struct` and are
+/// copied by `clone()`, so a library's own threads stay lowered for free. This is
 /// the only platform where that holds.
 #[cfg(target_os = "linux")]
 #[test]
@@ -125,7 +125,7 @@ fn spawn_thread____child_thread____inherits_nice_and_io_priority() {
     );
 }
 
-/// Windows: **not** inherited. MSDN: "All threads initially start at
+/// Windows: *not* inherited. MSDN: "All threads initially start at
 /// `THREAD_PRIORITY_NORMAL`." Background processing mode and EcoQoS are
 /// per-thread and don't propagate either.
 #[cfg(target_os = "windows")]

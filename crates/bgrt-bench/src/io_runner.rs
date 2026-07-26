@@ -87,7 +87,7 @@ pub fn run(executor: Executor, plan: &IoPlan) -> Result<IoRunResult, bgrt::Error
     })
 }
 
-/// Spawn the foreground readers on **plain** OS threads: unclassified on purpose,
+/// Spawn the foreground readers on *plain* OS threads: unclassified on purpose,
 /// since they represent whatever else the machine is doing.
 fn spawn_foreground(plan: &IoPlan, gate: Instant) -> Vec<JoinHandle<WorkerStats>> {
     (0..plan.foreground)

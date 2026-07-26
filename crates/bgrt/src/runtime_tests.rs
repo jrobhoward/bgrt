@@ -94,12 +94,12 @@ fn current_thread_runtime____many_tasks____all_share_one_thread() {
 fn current_thread_runtime____thread_name____comes_from_the_builder() {
     let rt = RuntimeBuilder::new()
         .current_thread(true)
-        .thread_name("quiet-driver")
+        .thread_name("lowprio-driver")
         .build()
         .unwrap();
     let handle = rt.spawn(async { std::thread::current().name().map(str::to_owned) });
     let name = rt.block_on(async move { handle.await.unwrap() });
-    assert_eq!(name.as_deref(), Some("quiet-driver"));
+    assert_eq!(name.as_deref(), Some("lowprio-driver"));
 }
 
 #[test]

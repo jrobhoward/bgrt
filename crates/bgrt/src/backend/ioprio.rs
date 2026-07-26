@@ -10,7 +10,7 @@
 //! # Why best-effort and not `IOPRIO_CLASS_IDLE`
 //!
 //! `IOPRIO_CLASS_IDLE` gets the disk only when nothing else wants it — the I/O
-//! equivalent of `SCHED_IDLE`, which this project rejects for CPU because quiet
+//! equivalent of `SCHED_IDLE`, which this project rejects for CPU because low-priority
 //! work must still crawl forward under contention. Best-effort level 7 is the
 //! weighted-fair choice, exactly parallel to using `nice(19)` over `SCHED_IDLE`.
 //!
@@ -27,7 +27,7 @@
 //! Whether the priority is *honoured* is the I/O scheduler's business: BFQ
 //! respects it fully, `mq-deadline` since 5.18, and `none` — a common default
 //! for NVMe — ignores it entirely. Like the `uclamp` frequency clamp, this is a
-//! hint that is inert on some configurations; check with
+//! hint that does nothing on some configurations; check with
 //! `cat /sys/block/<dev>/queue/scheduler`.
 
 #[cfg(target_os = "linux")]
@@ -73,7 +73,7 @@ fn ioprio_value(class: i32, level: i32) -> i32 {
     (class << IOPRIO_CLASS_SHIFT) | level
 }
 
-/// Lower the **current** thread's block-I/O priority to match `class`.
+/// Lower the *current* thread's block-I/O priority to match `class`.
 ///
 /// Best-effort: a kernel or sandbox that refuses the syscall degrades to a no-op
 /// rather than failing the caller, since I/O priority is an optimization, not

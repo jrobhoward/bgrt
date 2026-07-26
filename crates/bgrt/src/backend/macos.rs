@@ -3,7 +3,7 @@
 //! Maps a [`QosClass`] onto a Darwin QoS class via `pthread_set_qos_class_self_np`.
 //! [`QosClass::Background`] → `QOS_CLASS_BACKGROUND`, which on Apple Silicon is
 //! confined to efficiency cores; [`QosClass::Utility`] → `QOS_CLASS_UTILITY`
-//! (quieter than default, all cores); [`QosClass::Default`] → `QOS_CLASS_DEFAULT`.
+//! (below default, all cores); [`QosClass::Default`] → `QOS_CLASS_DEFAULT`.
 //! Lowering QoS never requires privileges.
 
 use crate::error::Error;

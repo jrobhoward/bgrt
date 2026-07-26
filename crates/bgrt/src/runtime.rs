@@ -9,7 +9,7 @@
 //! By default the runtime uses Tokio's multi-thread scheduler with one worker.
 //! That already costs exactly one thread — Tokio drives I/O and timers on the
 //! worker itself, with no extra driver thread — so it is the ordinary
-//! single-quiet-worker configuration.
+//! single-low-priority-worker configuration.
 //!
 //! [`RuntimeBuilder::current_thread`] switches to Tokio's *current-thread*
 //! scheduler, which `bgrt` runs on **one OS thread that it spawns and
@@ -42,12 +42,12 @@ use crate::topology;
 /// Defaults: [`QosClass::Background`], one worker thread, efficiency-core pinning
 /// off, frequency clamp off.
 ///
-/// Note that this default is **not** [`QosClass::default()`], which is
+/// Note that this default is *not* [`QosClass::default()`], which is
 /// [`QosClass::Default`] (the passthrough, "no energy hint" class). The two
 /// differ on purpose: `QosClass`'s own default is the neutral member of the
-/// enum, whereas reaching for a *`bgrt` runtime* is itself the request for quiet
+/// enum, whereas reaching for a `bgrt` runtime is itself the request for low-priority
 /// execution — a `RuntimeBuilder` that defaulted to passthrough would do nothing
-/// unless configured. Set [`qos`](RuntimeBuilder::qos) explicitly if you want a
+/// unless configured. Set [`qos`](RuntimeBuilder::qos) explicitly for a
 /// different class.
 ///
 /// # Examples
@@ -128,13 +128,13 @@ impl RuntimeBuilder {
     /// - The thread exists for the runtime's whole lifetime and is joined when
     ///   the [`Runtime`] is dropped or shut down.
     ///
-    /// Prefer the default (`worker_threads(1)`) unless you specifically want
+    /// Prefer the default (`worker_threads(1)`) unless single-threaded task
     /// single-threaded task semantics: it costs the same one thread.
     ///
     /// # Deadlock hazard on drop
     ///
     /// Because `bgrt` owns the driver thread, dropping (or shutting down) a
-    /// current-thread [`Runtime`] **joins** that thread. Doing so from inside
+    /// current-thread [`Runtime`] *joins* that thread. Doing so from inside
     /// the runtime's own blocking pool therefore deadlocks, where a plain Tokio
     /// runtime would instead panic with "Cannot drop a runtime in a context
     /// where blocking is not allowed". Drop the [`Runtime`] from the thread that
@@ -403,11 +403,11 @@ impl Runtime {
 
     /// Run a blocking closure on the runtime's blocking pool.
     ///
-    /// Blocking-pool threads carry the **same** [`QosClass`] as the async
+    /// Blocking-pool threads carry the *same* [`QosClass`] as the async
     /// workers: `on_thread_start` fires for both, and that is deliberate — a
     /// background runtime whose `spawn_blocking` work ran at default priority
     /// would defeat the point, since CPU-bound work is exactly what tends to go
-    /// there. There is no separate class for the blocking pool; if you need
+    /// there. There is no separate class for the blocking pool; work needing
     /// blocking work at a different energy class, build a second runtime.
     pub fn spawn_blocking<F, R>(&self, f: F) -> JoinHandle<R>
     where
@@ -419,7 +419,7 @@ impl Runtime {
 
     /// Run a future to completion, driving the runtime.
     ///
-    /// Note: the future runs on the **calling** thread, which is not classified;
+    /// Note: the future runs on the *calling* thread, which is not classified;
     /// use [`spawn`](Runtime::spawn) for work that should run at this runtime's QoS.
     ///
     /// # Panics
@@ -458,7 +458,7 @@ impl Runtime {
     /// finish.
     ///
     /// Dropping a [`Runtime`] waits for blocking tasks *indefinitely*, which for
-    /// a background runtime can be a long time — quiet work is slow by design.
+    /// a background runtime can be a long time — low-priority work is slow by design.
     /// Use this to bound that wait. Tasks still running when the timeout expires
     /// are leaked, not cancelled.
     pub fn shutdown_timeout(self, timeout: Duration) {

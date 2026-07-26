@@ -45,9 +45,9 @@ pub enum Error {
     ///
     /// The cause is boxed rather than typed as `rayon::ThreadPoolBuildError` so
     /// that this enum does not change shape when rayon reshapes its error type.
-    /// Downcast the source if you need the concrete type.
+    /// Downcast the source to reach the concrete type.
     ///
-    /// Note this does **not** keep rayon out of `bgrt`'s public API, and is not
+    /// Note this does *not* keep rayon out of `bgrt`'s public API, and is not
     /// meant to: [`RayonPool`](crate::RayonPool) derefs to `rayon::ThreadPool`,
     /// just as [`Runtime`](crate::Runtime) hands back Tokio's `JoinHandle` and
     /// `Handle`. Wrapping those runtimes is the point of the crate. See the

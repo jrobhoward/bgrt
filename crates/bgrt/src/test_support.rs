@@ -57,7 +57,7 @@ pub fn current_disk_iopolicy() -> i32 {
 
 /// Read the calling thread's `uclamp.max` (0..=1024) from
 /// `/proc/thread-self/sched`, or `None` if the kernel lacks `CONFIG_UCLAMP_TASK`
-/// (in which case the line is absent and the clamp is inert).
+/// (in which case the line is absent and the clamp does nothing).
 #[cfg(target_os = "linux")]
 pub fn current_uclamp_max() -> Option<u32> {
     let sched = std::fs::read_to_string("/proc/thread-self/sched").ok()?;

@@ -2,12 +2,12 @@
 //!
 //! Sets the calling thread's niceness via `setpriority`. On Linux, niceness is a
 //! per-thread (per-task) attribute, so this gives genuine per-thread control.
-//! We use max-nice (weighted-fair) rather than `SCHED_IDLE`, so quiet work still
+//! Max-nice (weighted-fair) is used rather than `SCHED_IDLE`, so low-priority work still
 //! makes forward progress under contention instead of starving:
 //! [`QosClass::Background`] → `nice(19)`, [`QosClass::Utility`] → `nice(10)`,
 //! [`QosClass::Default`] → `nice(0)`.
 //!
-//! Then lowers **block-I/O priority** to match, via
+//! Then lowers block-I/O priority to match, via
 //! [`ioprio`](super::ioprio) — a `QosClass` governs disk demands as well as CPU,
 //! which macOS gets in a single call and Linux needs a second syscall for. Same
 //! anti-starvation reasoning: best-effort, never `IOPRIO_CLASS_IDLE`.
@@ -32,7 +32,7 @@
 //! Both are treated as a graceful no-op rather than an error, matching how
 //! [`ioprio`](super::ioprio) and `uclamp` degrade when the kernel declines a
 //! hint: the thread keeps the niceness it had, and `apply` still reports success.
-//! macOS and Windows have no such restriction — `Default` genuinely restores
+//! macOS and Windows have no such restriction — `Default` does restore
 //! there — so this is the one place a class is not fully reversible.
 //!
 //! Note the halves come apart under reclassification: best-effort I/O levels
@@ -59,7 +59,7 @@ pub(super) fn apply(class: QosClass) -> Result<(), Error> {
     super::ioprio::apply(class)
 }
 
-/// Set the **current** thread's nice value, tolerating the kernel's refusal to
+/// Set the *current* thread's nice value, tolerating the kernel's refusal to
 /// lower one. See the module docs for why that refusal is expected rather than
 /// exceptional.
 fn set_nice(nice: i32) -> Result<(), Error> {

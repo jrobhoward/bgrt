@@ -218,7 +218,7 @@ files and to rustdoc; `CHANGELOG.md` follows them too, minus the tone notes.
   instructions ("Build first, then run the binary"). The dual-licence boilerplate
   at the end of the README is standard legal text and stays as it is.
 - **Bold is for bullet lead-ins only** — the first word or phrase of a list item —
-  plus the first `bgrt` in the README. No bold mid-sentence, none in table cells,
+  plus the first `bgrt` in a document. No bold mid-sentence, none in table cells,
   none opening a paragraph. Italics are for genuine contrast (*more* per work
   unit), used sparingly. If a sentence needs bold to land, rewrite it.
 - **No decorative icons.** Write "yes" and "no" in tables, not ✅ and ❌. The
@@ -233,6 +233,11 @@ files and to rustdoc; `CHANGELOG.md` follows them too, minus the tone notes.
   "critically" — unless the deliberateness is the actual point.
 - **Understate the caveats.** They land harder plainly stated: "nobody has run it
   on that hardware" beats "a critical unverified gap".
+- **Say "low-priority", not "quiet".** The library lowers scheduling priority;
+  "quiet" is vague and overlaps with the fan-noise sense. Keep "quiet" or
+  "quieter" only where the subject really is noise or heat ("a cooler, quieter
+  machine"). Related: "low-priority work", "a lower-priority executor", "work at
+  low priority".
 
 **Don't restate the QoS mapping table.** The canonical copy is in the README
 (*QoS classes*); this file's table is the contributor quick-reference and the only

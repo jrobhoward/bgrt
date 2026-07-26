@@ -71,7 +71,7 @@ fn apply____background_then_default____clears_throttling_and_restores_priority()
 
 /// Windows exposes no getter for block-I/O priority, so the mode's *other*
 /// documented side effect stands in for it: entering background mode lowers
-/// memory priority. This asserts the raw mode really takes effect — without it,
+/// memory priority. This asserts the raw mode takes effect — without it,
 /// the restore test below would pass just as happily if the mode were never
 /// entered at all, since the restored value is also the starting one.
 ///

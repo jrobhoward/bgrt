@@ -153,7 +153,7 @@ pub use tokio;
 #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
 pub use rayon;
 
-/// Apply an energy [`QosClass`] to the **current** thread.
+/// Apply an energy [`QosClass`] to the *current* thread.
 ///
 /// This never requires elevated privileges: lowering a thread's scheduling
 /// demands is always permitted, and where the reverse is *not* — raising them
@@ -161,7 +161,7 @@ pub use rayon;
 /// need. Classification is intended to happen once, early in a thread's life
 /// (for example from a runtime's thread-start hook).
 ///
-/// On Linux that reverse direction is genuinely unavailable: `nice` is one-way
+/// On Linux that reverse direction is unavailable: `nice` is one-way
 /// for an unprivileged thread, so applying [`QosClass::Default`] to a thread
 /// already classified `Background` (or running in an already-niced process)
 /// leaves its niceness where it is and still returns `Ok`. macOS and Windows can
@@ -178,7 +178,7 @@ pub use rayon;
 /// ```
 /// use bgrt::QosClass;
 ///
-/// // Make the current thread quiet and energy-efficient.
+/// // Lower the current thread to the background class.
 /// bgrt::apply(QosClass::Background)?;
 /// # Ok::<(), bgrt::Error>(())
 /// ```

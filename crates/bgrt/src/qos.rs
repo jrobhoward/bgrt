@@ -3,10 +3,10 @@
 /// How aggressively the OS should optimize a thread for energy efficiency over
 /// speed. Applied to a thread via [`crate::apply`].
 ///
-/// A class governs a thread's **resource demands, not only its CPU demands** —
+/// A class governs a thread's resource demands, not only its CPU demands —
 /// block-I/O priority moves with it. That is one knob rather than two because
 /// two of the three platforms bundle the axes in a single mechanism: there is no
-/// documented way to ask Windows for quiet I/O without also asking for quiet
+/// documented way to ask Windows for low-priority I/O without also lowering
 /// CPU, and macOS's QoS classes carry an I/O policy with them. An API offering
 /// combinations it could not honour would be worse than a coarser one that
 /// always means what it says.
@@ -28,11 +28,11 @@
 /// - **Linux** — an explicit `ioprio_set` to the best-effort class. Whether it
 ///   *bites* depends on the I/O scheduler: BFQ honours it fully, `mq-deadline`
 ///   since 5.18, and `none` — a common default for NVMe — ignores it entirely.
-///   Inert rather than wrong, like the `uclamp` cap.
+///   It does nothing there rather than something wrong, like the `uclamp` cap.
 /// - **Windows** — `Background` only, via background processing mode
 ///   (`THREAD_MODE_BACKGROUND_BEGIN`), the sole documented per-thread I/O lever.
 ///   `Utility` gets no I/O reduction: the mode is all-or-nothing and would drag
-///   CPU priority down with it, which is precisely what separates `Utility` from
+///   CPU priority down with it, which is what separates `Utility` from
 ///   `Background`. Microsoft documents that a background-mode thread "may not be
 ///   scheduled promptly, but it will never be starved" — weaker than Linux's
 ///   weighted-fair share, so expect low throughput under sustained foreground
@@ -54,13 +54,13 @@
 ///
 /// # Threads spawned by classified threads
 ///
-/// A class applies to the thread it was applied to — **not** to threads that
+/// A class applies to the thread it was applied to — *not* to threads that
 /// code running on it goes on to create. Whether a child inherits is an OS
 /// decision, and the platforms disagree: Linux inherits (`nice` and I/O priority
 /// are copied by `clone()`), macOS and Windows do not (a child reports
 /// `QOS_CLASS_DEFAULT` / `THREAD_PRIORITY_NORMAL`). Nor can it be fixed
 /// afterwards on those two — their classification APIs act only on the *calling*
-/// thread. Hand libraries a `bgrt` runtime or pool where you can; see the README
+/// thread. Hand libraries a `bgrt` runtime or pool where possible; see the README
 /// for the full table and the workarounds.
 ///
 /// On Linux the base CPU mapping is niceness; efficiency-core affinity and a
@@ -68,7 +68,7 @@
 /// `clamp_frequency`). The `uclamp` cap is the only lever that lowers clocks on
 /// homogeneous CPUs, where `nice` alone leaves frequency untouched.
 ///
-/// Every `Background` mapping is weighted-fair (not run-only-when-idle), so quiet
+/// Every `Background` mapping is weighted-fair (not run-only-when-idle), so low-priority
 /// work still makes forward progress under contention rather than starving. That
 /// applies to the I/O half too: Linux uses best-effort level 7, deliberately not
 /// `IOPRIO_CLASS_IDLE`, for the same reason it uses `nice(19)` and not
@@ -79,7 +79,7 @@
 /// `QosClass::default()` is [`QosClass::Default`] — the neutral, no-hint class,
 /// matching the name. The *builders* deliberately differ: `RuntimeBuilder`,
 /// `RayonBuilder`, and `ThreadBuilder` all default to [`QosClass::Background`],
-/// because constructing one is already a request for quiet execution. Don't read
+/// because constructing one is already a request for low-priority execution. Do not read
 /// `QosClass::default()` as "what `bgrt` does by default".
 ///
 /// # Stability
@@ -98,9 +98,9 @@ pub enum QosClass {
     /// still making (slow) forward progress under contention. The "fans never"
     /// class; on Apple Silicon it is confined to efficiency cores.
     Background,
-    /// Quiet but unconfined: lower priority than normal work, but free to use
+    /// Lowered but unconfined: below normal priority, but free to use
     /// performance cores. A middle ground when [`QosClass::Background`] is too
-    /// slow (notably on macOS, where `Background` is E-core-jailed).
+    /// slow (on macOS especially, where `Background` is confined to E-cores).
     Utility,
     /// No energy hint — ordinary OS scheduling.
     #[default]

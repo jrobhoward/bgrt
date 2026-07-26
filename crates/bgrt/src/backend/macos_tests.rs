@@ -34,7 +34,7 @@ fn apply____default____sets_default_qos_on_current_thread() {
     assert_eq!(h.join().unwrap(), QOS_CLASS_DEFAULT);
 }
 
-/// The disk half of a class comes from the QoS band on macOS, and **must** —
+/// The disk half of a class comes from the QoS band on macOS, and *must* —
 /// this backend deliberately never calls `setiopolicy_np`.
 ///
 /// Measured: setting an explicit thread-scope I/O policy permanently opts the
@@ -42,7 +42,7 @@ fn apply____default____sets_default_qos_on_current_thread() {
 /// `QOS_CLASS_UNSPECIFIED` (0), and calling `pthread_set_qos_class_self_np`
 /// afterwards does *not* restore it — neither ordering yields both. Trading
 /// E-core confinement for an assertable I/O policy would be a catastrophic deal,
-/// so we take Darwin's bundled behaviour and leave the override alone.
+/// so the backend takes Darwin's bundled behaviour and leaves the override alone.
 ///
 /// This guards against re-adding it: the QoS assertion is what breaks first.
 #[test]

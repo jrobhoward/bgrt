@@ -1,8 +1,8 @@
 //! The CPU-bound workload that each executor runs.
 //!
-//! The workload keeps a core busy for a fixed duration and **self-samples**
+//! The workload keeps a core busy for a fixed duration and self-samples
 //! telemetry as it goes, so core placement / frequency are attributed to the
-//! thread actually doing the work. It returns the number of **work units**
+//! thread actually doing the work. It returns the number of work units
 //! (fixed-size compute chunks) completed, which is the throughput signal: a
 //! slower (efficiency-core, low-clock) executor completes fewer in the same wall
 //! time.

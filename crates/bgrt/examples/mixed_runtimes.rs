@@ -1,4 +1,4 @@
-//! Run latency-sensitive work and quiet work in the same process, by keeping a
+//! Run latency-sensitive work and low-priority work in the same process, by keeping a
 //! Default-class runtime and a Background-class runtime side by side.
 //!
 //! ```text
@@ -17,7 +17,7 @@ fn main() -> Result<(), bgrt::Error> {
         .thread_name("bg-worker")
         .build()?;
 
-    // Quiet, deprioritized work goes to the background runtime...
+    // Low-priority work goes to the background runtime...
     let bg = background.spawn(async {
         let mut acc = 0u64;
         for i in 0..5_000_000u64 {

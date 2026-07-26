@@ -5,7 +5,7 @@ Notable changes to **bgrt**, in the format of
 
 Nothing has been released yet, so everything below is the content of the first
 release. Development ran from 2026-06-13 to 2026-07-26; the per-change reasoning
-lives in [`docs/DESIGN.md`](docs/DESIGN.md) and the day-by-day sequence in the git
+is in [`docs/DESIGN.md`](docs/DESIGN.md) and the day-by-day sequence in the git
 history, so this file records *what* shipped rather than how it got there.
 
 ## [Unreleased] — 0.9.0 candidate
@@ -21,12 +21,12 @@ history, so this file records *what* shipped rather than how it got there.
   free via the QoS class itself. One knob, not two — two of three platforms
   cannot express a CPU/I/O split.
 - **`RuntimeBuilder` / `Runtime`** (feature `tokio`, on by default) — wraps a
-  multi-thread tokio runtime and classifies **every** runtime thread, including
+  multi-thread tokio runtime and classifies every runtime thread, including
   the blocking pool, via `on_thread_start`. `spawn`, `spawn_blocking`, `block_on`,
   `handle`, `qos`, `shutdown_timeout`, `shutdown_background`.
 - **`RuntimeBuilder::current_thread(bool)`** — single-threaded task semantics
   driven on one OS thread that `bgrt` spawns and classifies, never the caller's
-  (tokio's own hook doesn't fire for that thread, and reclassifying a foreign
+  (tokio's own hook does not fire for that thread, and reclassifying a foreign
   thread is unsound on Linux).
 - **`RayonBuilder` / `RayonPool`** (feature `rayon`, opt-in) — a rayon thread pool
   whose workers are classified at start; derefs to `rayon::ThreadPool`.
@@ -66,7 +66,7 @@ history, so this file records *what* shipped rather than how it got there.
   bumps; a Tokio or rayon major is a `bgrt` major. See
   [Stability](README.md#stability).
 - **The rayon pool calls the shared `thread::classify`** instead of reimplementing
-  the qos → pin → clamp sequence, so a future knob can't reach two builders and
+  the qos → pin → clamp sequence, so a future knob cannot reach two builders and
   silently skip the third.
 
 ### Fixed
@@ -75,7 +75,7 @@ history, so this file records *what* shipped rather than how it got there.
   `cpu_capacity` is an arm64 interface that appears not to exist on x86 at all;
   detection now falls back to the `cpu_atom` PMU, which names the E-cores
   directly. The old behaviour was indistinguishable from the correct no-op on a
-  homogeneous machine — the failure mode this project treats as the dangerous one.
+  homogeneous machine, which is the failure this project worries about most.
 - **Linux `apply(Default)` failed inside an already-niced process.** `setpriority`
   returns `EACCES` when asked to raise priority, so a `Default`-class runtime
   errored on every worker under `nice -n 10 …` or systemd `Nice=`. Now a graceful
@@ -93,8 +93,8 @@ history, so this file records *what* shipped rather than how it got there.
   Every worker now counts at least one read.
 - **macOS: `setiopolicy_np` is never called.** Setting an explicit I/O policy
   permanently opts the thread out of QoS — measured — costing E-core confinement
-  and the headline power result. Implementation reverted; a regression test guards
-  it.
+  and the power result that depends on it. Implementation reverted; a regression
+  test guards it.
 
 ### Security
 
@@ -119,10 +119,10 @@ history, so this file records *what* shipped rather than how it got there.
   now canonical and everything else links to it.
 - `README.md` streamlined to what the crate does and how to use it;
   `docs/BENCHMARKS.md` became the measurement hub (results, per-OS commands, and
-  the machines we still need); `docs/ROADMAP.md` reduced to the 0.9 → 1.0 plan;
+  the machines still wanted); `docs/ROADMAP.md` reduced to the 0.9 to 1.0 plan;
   `docs/DESIGN.md` holds the durable rationale, the findings, and UML diagrams of
   the builder trio and the classification sequence.
 - Caveats are documented rather than implied away: hybrid-Linux pinning and the
   Windows performance story are labelled untested; `uclamp` and Linux I/O priority
-  are inert under some governors and I/O schedulers; classification does not
-  follow threads your dependencies spawn, except on Linux.
+  do nothing under some governors and I/O schedulers; classification does not
+  follow threads that dependencies spawn, except on Linux.

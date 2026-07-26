@@ -9,7 +9,7 @@
 //! Threads spawned *by* the classified thread inherit it only on Linux; on macOS
 //! and Windows they start unclassified. So running a library that manages its
 //! own worker threads (RocksDB's compaction pool, for instance) on a
-//! `Background` thread does **not** make that library's threads quiet on two of
+//! `Background` thread does not lower that library's own threads on two of
 //! three platforms — and their classification APIs are current-thread-only, so
 //! it cannot be corrected from outside either. See [`QosClass`] and the README.
 
@@ -19,7 +19,7 @@ use crate::qos::QosClass;
 use crate::topology;
 
 /// Apply the energy class (and, if requested, efficiency-core pinning and a
-/// frequency clamp) to the **current** thread. Best-effort: warns on failure
+/// frequency clamp) to the *current* thread. Best-effort: warns on failure
 /// rather than aborting, since QoS/affinity/clamp are optimizations, not
 /// correctness.
 ///
@@ -45,7 +45,7 @@ pub(crate) fn classify(class: QosClass, efficiency_cores: &[usize], clamp_freque
 /// Spawn an OS thread classified with `class`, running `f`.
 ///
 /// The QoS class is applied to the new thread before `f` runs. This mirrors
-/// [`std::thread::spawn`], including that it **panics** if the OS cannot create
+/// [`std::thread::spawn`], including that it *panics* if the OS cannot create
 /// the thread; use [`ThreadBuilder::spawn`] for a non-panicking `Result`. It does
 /// not pin to efficiency cores — use [`ThreadBuilder`] for that.
 ///

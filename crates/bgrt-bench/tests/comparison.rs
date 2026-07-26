@@ -93,7 +93,7 @@ fn comparison____io_workload____reports_both_phases_against_a_baseline() {
     }
 
     // Deliberately *not* asserted: that background protects the foreground more
-    // than default does. That is the headline result, but a 0.2 s run on a shared,
+    // than default does. That is the result that matters, but a 0.2 s run on a shared,
     // virtualized CI disk can't measure it reliably — see docs/BENCHMARKS.md for
     // the real-hardware numbers. This test guards the plumbing.
     eprintln!("cache bypass: {}", parsed["cache_bypass"]);

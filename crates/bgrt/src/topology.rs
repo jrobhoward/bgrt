@@ -27,7 +27,7 @@ use crate::error::Error;
 ///    `CONFIG_GENERIC_ARCH_TOPOLOGY`.
 /// 2. **The hybrid perf PMUs** — `cpu_atom`'s CPU list, for Intel hybrid x86.
 ///
-/// The second exists because **x86 does not appear to publish `cpu_capacity`**.
+/// The second exists because x86 does not appear to publish `cpu_capacity`.
 /// The attribute arrived in 2016 as an arm/arm64 feature; Intel deliberately
 /// proposed a different interface rather than adopting it; and while
 /// `intel_pstate` has set asymmetric capacity for the *scheduler* since 2024, it
@@ -108,7 +108,7 @@ fn hybrid_pmu_efficiency_cores() -> Vec<usize> {
 ///
 /// Malformed entries are skipped rather than failing the whole read: this feeds
 /// an optimization, and a partial answer beats none. Implausibly wide ranges are
-/// dropped so a corrupt file cannot make us allocate unboundedly; `CPU_SETSIZE`
+/// dropped so a corrupt file cannot force an unbounded allocation; `CPU_SETSIZE`
 /// is the ceiling because [`pin_current_thread`] cannot address beyond it anyway.
 #[cfg(any(target_os = "linux", test))]
 fn parse_cpulist(text: &str) -> Vec<usize> {
@@ -146,7 +146,7 @@ fn parse_cpulist(text: &str) -> Vec<usize> {
     out
 }
 
-/// Given `(cpu_index, capacity)` pairs, return the CPUs at the **minimum**
+/// Given `(cpu_index, capacity)` pairs, return the CPUs at the *minimum*
 /// capacity (the efficiency cores), or empty if the set is empty or homogeneous
 /// (capacity unavailable, or all cores equal → not a hybrid CPU).
 ///
@@ -180,7 +180,7 @@ fn select_efficiency_cores(caps: Vec<(usize, u64)>) -> Vec<usize> {
 /// [`telemetry::sample`](crate::telemetry::sample) compares these indices
 /// against — so mixing groups would silently alias CPU 3 of group 0 with CPU 3
 /// of group 1. Systems with more than 64 logical processors are the only ones
-/// affected, and hybrid consumer CPUs (the whole point of this lookup) are
+/// affected, and hybrid consumer CPUs, which is what this lookup is for, are
 /// single-group.
 ///
 /// Used for *classification* only; Windows placement is EcoQoS's job (see the
@@ -287,7 +287,7 @@ pub(crate) fn efficiency_cores() -> Vec<usize> {
     Vec::new()
 }
 
-/// Pin the **current** thread to the given CPU indices.
+/// Pin the *current* thread to the given CPU indices.
 ///
 /// Linux only; a no-op elsewhere. Restricting a thread to a subset of its
 /// allowed CPUs is unprivileged.

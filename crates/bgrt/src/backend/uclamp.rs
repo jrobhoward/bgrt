@@ -6,16 +6,16 @@
 //! lever — it caps the utilization signal a task contributes, so the governor
 //! selects a lower OPP (operating performance point) for it even at 100% busy.
 //!
-//! We only ever *lower* `util_max`, which is always unprivileged (raising
-//! `util_min` above the system cap would need `CAP_SYS_NICE`; we never do that),
+//! Only `util_max` is ever lowered, which is always unprivileged (raising
+//! `util_min` above the system cap would need `CAP_SYS_NICE`, which never happens),
 //! keeping the library's no-elevation guarantee. This is opt-in and best-effort:
 //! on kernels without uclamp (< 5.3) or `SCHED_FLAG_KEEP_ALL` (< 5.8) the
-//! syscall fails and we degrade to a no-op, exactly like unknown topology.
+//! syscall fails and the call degrades to a no-op, exactly like unknown topology.
 //!
 //! Effect requires the `schedutil` governor (or `intel_pstate=passive`); under
-//! fixed governors or HWP the kernel's util signal is bypassed and the cap is
-//! inert. Off Linux this is a no-op: macOS/Windows throttle frequency via their
-//! own QoS/EcoQoS facilities.
+//! fixed governors or HWP the kernel's util signal is bypassed and the cap does
+//! nothing. Off Linux this is a no-op: macOS and Windows bias frequency through
+//! their own QoS and EcoQoS facilities.
 
 #[cfg(target_os = "linux")]
 use crate::error::Error;
@@ -39,9 +39,9 @@ const SCHED_FLAG_KEEP_ALL: u64 = SCHED_FLAG_KEEP_POLICY | SCHED_FLAG_KEEP_PARAMS
 const SCHED_FLAG_UTIL_CLAMP_MAX: u64 = 0x40;
 
 /// `struct sched_attr` (uapi/linux/sched/types.h). `libc` ships no wrapper for
-/// `sched_setattr` nor this struct, so we declare it. The kernel versions the
-/// struct by its `size`; passing our (newer) size is fine on capable kernels
-/// and rejected on pre-uclamp ones, which we treat as a no-op.
+/// `sched_setattr` nor this struct, so it is declared here. The kernel versions
+/// the struct by its `size`; passing this (newer) size is fine on capable kernels
+/// and rejected on pre-uclamp ones, which is treated as a no-op.
 #[cfg(target_os = "linux")]
 #[repr(C)]
 #[derive(Default)]
@@ -61,7 +61,7 @@ struct SchedAttr {
 /// `util_max` cap per class, or `None` to leave the task unclamped.
 ///
 /// Only [`QosClass::Background`] is clamped: [`QosClass::Utility`] is
-/// deliberately "quiet but unconfined" (free to ask for high clocks), matching
+/// left unclamped and free to ask for high clocks, matching
 /// its E-core-free stance elsewhere. ~20% confines background work to the low
 /// OPPs that keep the fans off. Tunable; this is the one knob worth measuring.
 #[cfg(target_os = "linux")]
@@ -72,7 +72,7 @@ fn util_max_for(class: QosClass) -> Option<u32> {
     }
 }
 
-/// Cap the **current** thread's `util_max` for `class`. A no-op for classes that
+/// Cap the *current* thread's `util_max` for `class`. A no-op for classes that
 /// aren't clamped, and a graceful no-op on kernels/governors without uclamp.
 #[cfg(target_os = "linux")]
 pub(crate) fn clamp_current_thread(class: QosClass) -> Result<(), Error> {

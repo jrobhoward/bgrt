@@ -20,8 +20,8 @@
 //! the `bgrt-bench` comparison harness, and its surface may change or be removed
 //! in any release — including a patch release — without a major version bump.
 //! The rest of the crate (`QosClass`, `apply`, the builders, `Error`) carries the
-//! usual guarantees; this module does not. Depend on it only if you can absorb
-//! that, and pin an exact version if you do.
+//! usual guarantees; this module does not. Depend on it only where that churn
+//! is acceptable, and pin an exact version when doing so.
 
 use std::collections::BTreeSet;
 

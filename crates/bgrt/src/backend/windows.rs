@@ -32,7 +32,7 @@
 //! promise than the weighted-fair share Linux `nice` gives, and Windows delivers
 //! it by periodically boosting a thread that has been denied the CPU for too
 //! long. Throughput under sustained foreground load is therefore expected to be
-//! poor — this is the quiet end of the range, by design.
+//! poor. That is the low-priority end of the range, by design.
 //!
 //! # Memory priority is deliberately restored
 //!
@@ -80,7 +80,7 @@ use crate::qos::QosClass;
 pub(super) fn apply(class: QosClass) -> Result<(), Error> {
     let (background, eco, priority) = match class {
         QosClass::Background => (true, true, THREAD_PRIORITY_BELOW_NORMAL),
-        // Utility is "quiet but unconfined": EcoQoS, but no I/O reduction.
+        // Utility is lowered but unconfined: EcoQoS, but no I/O reduction.
         // Windows offers no intermediate I/O tier — background mode is
         // all-or-nothing — and taking it here would drag CPU priority down too,
         // which is exactly what distinguishes Utility from Background.
