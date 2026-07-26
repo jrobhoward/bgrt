@@ -190,12 +190,48 @@ Per-signal availability is tabulated in
 [the README](../README.md#whats-measurable-per-platform) and in the `telemetry`
 module docs; it is not repeated here.
 
-**The harness measures CPU only.** The workload is a CPU-bound loop, so every
-published number exercises the CPU half of a `QosClass` and none of the disk
-half. That is a gap in the *evidence*, not in the implementation — the I/O
-mapping is behaviour-tested per platform — but it means the benchmark tables
-should not be read as validating the "CPU *and* disk" claim. Tracked in
-[`ROADMAP.md`](ROADMAP.md) as a 0.9 blocker.
+### Measuring the disk half
+
+The harness measured CPU only until 2026-07-26 — a gap in the *evidence*, not the
+implementation, but one that left the "CPU *and* disk" claim resting on
+documentation. `--workload io` closes it. Four decisions shaped it, each of which
+would have produced a misleading benchmark if taken the other way:
+
+- **Contention, not solo throughput.** I/O priority is a mechanism for deciding
+  *who waits*; with nothing to wait behind, all three platforms run low-priority
+  reads at close to full speed. A benchmark of one executor against an idle
+  device would have produced four near-identical rows and read as "the I/O
+  mapping does nothing". So each executor runs alone *and* against plain
+  unclassified threads, and the headline is what the **foreground** keeps
+  (`fg_prot%`) — the thing a user actually cares about.
+- **Cache bypass, or say so.** Reads that hit the page cache never reach the
+  block layer, where the class applies; they measure `memcpy`. Hence `O_DIRECT` /
+  `F_NOCACHE` / `FILE_FLAG_NO_BUFFERING`, plus 4 KiB-aligned buffers and offsets.
+  Where a filesystem refuses (tmpfs rejects `O_DIRECT`), the run is labelled
+  `buffered` and warns rather than publishing cache numbers as disk numbers —
+  the same "inert configurations are reported, not hidden" rule as `uclamp` and
+  the I/O scheduler.
+- **Reads, not writes.** Buffered writes are issued to the device by a flusher
+  thread, so their priority is the *flusher's*, not the classified thread's.
+  Measuring writes would have attributed I/O to a thread that didn't issue it.
+- **Warm up by reading, never by sleeping.** The first design had workers sleep
+  until a shared start instant. On macOS that silently broke the very class being
+  measured: timer deferral for `QOS_CLASS_BACKGROUND` threads meant a background
+  reader woke *after* its window closed and recorded zero reads. Workers now read
+  (uncounted) through the warm-up, which keeps them runnable and also matches the
+  real scenario — a background job already in flight when foreground work
+  arrives.
+
+**What it found.** On an M1, `Background` drops from ~1000 MiB/s solo to ~8 MiB/s
+against a foreground reader, leaving that foreground at 99.6% of its uncontended
+baseline where a `Default`-class competitor leaves it 76.8%. Slow but not
+stopped, which is the weighted-fair requirement made visible. Two things were
+genuinely surprising and are recorded in [`BENCHMARKS.md`](BENCHMARKS.md):
+`Utility` throttles nearly as hard as `Background` on macOS (Apple's mapping, not
+ours — and unlike the CPU axis, where `Utility` tracks `Default`), and an
+unsaturated device makes `Default` look just as polite as `Background`, so the
+harness detects that case and says so rather than letting the reader draw a
+conclusion from it.
 
 ## Privileges
 
@@ -473,11 +509,16 @@ objection, and it is the thing to re-test — not the conclusion.
     confinement, the DVFS bias, and the ~12× power result that is this crate's
     headline evidence — in exchange for a readable I/O field. Not a trade worth
     making, so the backend deliberately never calls `setiopolicy_np`.
-  - Consequence: macOS's I/O coverage rests on Apple's documentation and is
-    *structurally* unassertable, a weaker footing than Linux (`ioprio_get`) or
-    Windows (memory-priority side effect). Recorded rather than papered over, and
-    guarded by a regression test that asserts the QoS class survives
-    classification and the I/O override stays unset.
+  - Consequence: the macOS I/O *policy* is structurally unassertable, a weaker
+    footing than Linux (`ioprio_get`) or Windows (memory-priority side effect).
+    Recorded rather than papered over, and guarded by a regression test that
+    asserts the QoS class survives classification and the I/O override stays
+    unset.
+  - **Amended 2026-07-26:** the policy still can't be read back, but its *effect*
+    now is. `bgrt-bench --workload io` measures a classified reader collapsing
+    from ~1000 MiB/s to ~8 MiB/s against foreground traffic — behavioural
+    evidence, which is stronger than a readable field anyway, and the reason this
+    row moved from "rests on Apple's documentation" to "measured".
   - It also explains *why* Darwin bundles the two axes, which is the observation
     the whole single-`QosClass` API rests on: the QoS class **is** the I/O
     mechanism there, not merely correlated with it.

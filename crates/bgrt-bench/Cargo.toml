@@ -17,3 +17,11 @@ clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 parking_lot = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# Cache-bypassing reads for the disk workload: O_DIRECT / F_NOCACHE / fadvise.
+libc = { workspace = true }
+
+[dev-dependencies]
+rstest = { workspace = true }
+tempfile = { workspace = true }

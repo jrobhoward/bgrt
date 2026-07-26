@@ -4,14 +4,13 @@ Full output from `bgrt-bench` on every machine it has been run on, with the
 analysis for each. The [README](../README.md#benchmarking-bgrt-bench) carries the
 headline macOS result and how to run the harness; this file is the complete set.
 
-> **These numbers measure CPU only.** The workload is a CPU-bound loop, so
-> nothing here exercises the disk half of a `QosClass`. The I/O mapping is
-> behaviour-tested per platform but not benchmarked — see
-> [`ROADMAP.md`](ROADMAP.md).
-
 The headline signal is **`work/s` (throughput)**: runs are duration-bounded, so a
 quieter executor completes *less* work in the same wall time. It is the only
 column available unprivileged on every platform.
+
+**CPU results come first; the disk results are at the bottom** under
+[Disk](#disk---workload-io). Every CPU table on this page is from `--workload cpu`
+(the default), so it exercises the CPU half of a `QosClass` only.
 
 ## Apple M1 (heterogeneous, with `sudo … --mac-power`)
 
@@ -115,3 +114,81 @@ smaller battery bill for a fixed amount of work.
 Contrast the macOS result above, where efficiency-core *placement* cuts energy
 ~4× **per unit of work**: placement and frequency are distinct levers with
 distinct economics.
+
+---
+
+## Disk (`--workload io`)
+
+The disk workload answers a different question from the CPU one. There, the
+signal is that quiet work *does less*. Here, the signal is that quiet work *gets
+out of the way*: I/O priority is a contention mechanism on all three platforms,
+so an executor measured alone on an idle device shows almost nothing. Every
+executor is therefore run twice — alone, and against plain unclassified OS
+threads standing in for a foreground app — and the headline column is
+**`fg_prot%`**: what that foreground keeps, as a percentage of its own
+uncontended baseline.
+
+All reads bypass the page cache (`O_DIRECT` / `F_NOCACHE` /
+`FILE_FLAG_NO_BUFFERING`); a run that can't bypass says `reads buffered` and
+warns. No privileges are needed on any platform — including macOS, where the CPU
+numbers need `sudo powermetrics`.
+
+### Apple M1 (APFS on internal NVMe, no privileges)
+
+```text
+$ bgrt-bench --workload io --duration 3 --workers 4 --io-foreground 4
+disk: foreground baseline 1301.2 MiB/s, reads direct
+executor              solo_mib/s  cont_mib/s    fg_mib/s  fg_prot%    p95_us
+default                    988.5       996.6       998.7      76.8       394
+utility                   1058.4        12.7      1267.9      97.4     22770
+background                1003.0         7.9      1295.3      99.6     32870
+background-threads        1021.6         8.0      1294.0      99.5     32872
+verdict: background left the foreground ≥ (got out of the way) disk throughput than default did
+```
+
+- **`Default` splits the device.** Foreground and background each land near
+  1000 MiB/s and the foreground keeps 76.8% of its 1301 MiB/s baseline. That is
+  fair sharing — correct behaviour, and exactly what you don't want from a
+  backup or an indexer.
+- **`Background` yields it.** ~1000 MiB/s solo → **7.9 MiB/s** under contention,
+  ~125× less, leaving the foreground at **99.6%** of baseline. Per-read latency
+  tells the same story from the other side: **32.9 ms at p95 vs 0.39 ms** for
+  `Default`. Darwin isn't queueing these reads behind the foreground's, it is
+  pacing them.
+- **It still makes progress.** 7.9 MiB/s is slow, not stopped — the
+  weighted-fair, never-`IOPRIO_CLASS_IDLE` requirement, visible in a number.
+- **`Utility` throttles nearly as hard as `Background` (97.4%).** Worth flagging,
+  because on the CPU axis `Utility` tracks `Default` closely — the middle ground
+  the README recommends for latency-sensitive quiet work is *not* a middle ground
+  on disk. That is Apple's mapping of `QOS_CLASS_UTILITY`, not a `bgrt` choice.
+
+Run-to-run, `default` lands at 62–79% and the quiet classes at 95–100%; the
+ordering has been stable across every run.
+
+### Saturation matters
+
+The same machine with the default `--workers 1 --io-foreground 1`:
+
+```text
+executor              solo_mib/s  cont_mib/s    fg_mib/s  fg_prot%    p95_us
+default                    408.0       396.4       396.3      98.4       196
+background                 268.2         2.0       401.3      99.6     31108
+```
+
+`Default` now scores 98.4% — not because it behaved differently, but because one
+reader at queue depth 1 never saturated the SSD, so there was nothing to contend
+for. The `background` row is unchanged (macOS's throttle has an unconditional
+component), but the *comparison* has lost its meaning. The harness detects this
+and prints a hint to raise `--workers` / `--io-foreground`. Read `fg_prot%` for
+`default` first: if it's near 100%, the run didn't measure contention.
+
+### Not yet measured
+
+- **Linux**, where the answer depends on the I/O scheduler: `bfq` should show the
+  full effect, `mq-deadline` less, and `none` — a common NVMe default — nothing
+  at all. The harness prints the active scheduler alongside the table so a null
+  result is attributable. Expect `--workload io` on `none` to look like a
+  no-op, because it is one.
+- **Windows**, where `THREAD_MODE_BACKGROUND_BEGIN` should behave like macOS's
+  throttle. Reasoned from Microsoft's documentation and Chromium's usage; not
+  yet run.

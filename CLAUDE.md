@@ -42,9 +42,12 @@ cargo test -p bgrt -- some____test____name          # single test
 cargo clippy --workspace --tests -- -Dwarnings
 cargo clippy --workspace --all-targets -- -Dwarnings   # also lints examples
 
-# Cross-compile checks for the other OS backends (no linker needed for `check`)
+# Cross-compile checks for the other OS backends (no linker needed for `check`).
+# Cover both crates: `bgrt-bench`'s io_file has per-OS code of its own.
 cargo clippy -p bgrt --tests --target x86_64-unknown-linux-gnu -- -Dwarnings
 cargo clippy -p bgrt --tests --target x86_64-pc-windows-msvc -- -Dwarnings
+cargo clippy -p bgrt-bench --all-targets --target x86_64-unknown-linux-gnu -- -Dwarnings
+cargo clippy -p bgrt-bench --all-targets --target x86_64-pc-windows-msvc -- -Dwarnings
 
 # Examples
 cargo run --example background_task -p bgrt
@@ -56,6 +59,12 @@ cargo run --example quiet_threads -p bgrt
 # not find the toolchain. Release profile is lto + codegen-units=1, so it's slow.
 cargo run --release -p bgrt-bench -- --duration 3
 cargo build --release -p bgrt-bench && sudo ./target/release/bgrt-bench --duration 3 --mac-power
+
+# Disk half. Reads bypass the page cache and need no privileges anywhere.
+# Saturate the device or the classes won't separate — one reader at QD1 leaves
+# the SSD idle enough that `Default` looks as polite as `Background` (the
+# harness prints a hint when that happens).
+cargo run --release -p bgrt-bench -- --workload io --duration 3 --workers 4 --io-foreground 4
 ```
 
 ## Architecture
@@ -93,7 +102,10 @@ updating the README table they point at.
 - **`bgrt-bench`** — the comparison harness binary (enables `bgrt/telemetry`).
   - `workload` — CPU-bound, self-sampling loop; returns work units (throughput).
   - `runner` — `Executor` (Default/Utility/Background/BackgroundThreads) → `RunResult` (wall, work, aggregate, energy, powermetrics). On macOS the threads runner matches the waiter's QoS during `join` (avoids the kernel promoting background threads off E-cores).
-  - `report` — `Summary`, aligned table, JSON, `background_not_hotter` verdict.
+  - `io_file` — scratch file + cache-bypassing reads (`O_DIRECT` / `F_NOCACHE` / `FILE_FLAG_NO_BUFFERING`), `AlignedBuf`, and the Linux `queue/scheduler` probe. Bypass failure is reported as `CacheBypass::Buffered`, never silently.
+  - `io_workload` — the random-read loop and `PhaseStats`. **Warm-up reads rather than sleeps** — macOS defers timers for `QOS_CLASS_BACKGROUND`, so a sleeping background reader wakes after its window closes. Reads only: buffered writes are issued by the flusher thread, so they'd measure its priority.
+  - `io_runner` — solo + contended phases per executor, against plain unclassified foreground threads. Contention is the point: on an idle device low-priority reads run near full speed everywhere, so a solo-only benchmark would read as "the I/O mapping does nothing".
+  - `report` — `Summary`/`IoSummary`, aligned tables, JSON, `background_not_hotter` and `background_yields_disk` verdicts, plus `device_saturated` (an unsaturated device makes `Default` look as polite as `Background`).
   - `power` — pure, cross-platform `PowerStats` parser for `powermetrics` output.
   - `power_macos` *(macOS only)* — `Sampler` that runs `powermetrics` per executor run (needs sudo).
 
@@ -119,16 +131,17 @@ the bottom of the source file with:
 #[path = "lib_tests.rs"]
 mod lib_tests;
 ```
-Integration tests live in `crates/<crate>/tests/`. The `bgrt-bench` integration test (`crates/bgrt-bench/tests/comparison.rs`) runs the harness binary end-to-end via `CARGO_BIN_EXE_bgrt-bench` and asserts background peak MHz ≤ default.
+Integration tests live in `crates/<crate>/tests/`. The `bgrt-bench` integration test (`crates/bgrt-bench/tests/comparison.rs`) runs the harness binary end-to-end via `CARGO_BIN_EXE_bgrt-bench` and asserts background peak MHz ≤ default. Its disk counterpart asserts **plumbing only** (well-formed report, no read errors, non-zero throughput) — a sub-second run on a shared virtualized CI disk cannot measure `fg_prot%` reliably, so the headline claim is evidenced in `docs/BENCHMARKS.md`, not in CI.
 
 **Test naming:** `subject____condition____result` — exactly four underscores
 between segments. Because consecutive underscores trip `non_snake_case`, every
 `*_tests.rs` file carries `#![allow(non_snake_case)]` at the top.
 
-**Test helpers:** `rstest` for parameterized tests. (`tempfile` is declared in
-`[workspace.dependencies]` but is not wired into `bgrt`'s dev-deps and is unused —
-sysfs-reading code is tested by extracting a pure function, e.g.
-`topology::select_efficiency_cores`, rather than by faking a filesystem.)
+**Test helpers:** `rstest` for parameterized tests. `tempfile` is a dev-dep of
+**`bgrt-bench` only**, where the disk workload needs a real scratch file; `bgrt`
+itself doesn't use it — sysfs-reading code is tested by extracting a pure
+function, e.g. `topology::select_efficiency_cores` or `io_file::parse_scheduler`,
+rather than by faking a filesystem.
 Platform-specific FFI introspection helpers (e.g. `current_qos()` on macOS, `current_nice()` on Linux) live in `src/test_support.rs` and are shared across all `*_tests.rs` modules via `use crate::test_support::*`.
 
 **No `.unwrap()` / `.expect()` in production code** — use `?`. `clippy.toml`

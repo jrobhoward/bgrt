@@ -49,20 +49,22 @@ newly-public repo looks broken:
 | 4 | Make the GitHub repository public | The CI badge only resolves once the repo is public; the other four resolve immediately after step 3 |
 | 5 | Tag `v0.9.0` and push | Starts the 60-day clock below |
 
-**Blocking 0.9:**
+**Blocking 0.9:** nothing outstanding.
 
-- [ ] **`bgrt-bench` has no I/O workload.** The crate's headline claim is that
-      one `QosClass` covers *CPU and disk*, but every published benchmark
-      measures a CPU-bound loop — so half the claim is documented and unmeasured.
-      Either add an I/O workload (needs a metric, and care to avoid measuring the
-      page cache) or state plainly in the README that the numbers are CPU-only.
-      The README currently carries the caveat; replacing it with a measurement is
-      the better outcome, and is the last substantive gap before going public.
+- [x] **`bgrt-bench` has no I/O workload.** ✅ Closed 2026-07-26 by
+      `--workload io`: random cache-bypassing reads (`O_DIRECT` / `F_NOCACHE` /
+      `FILE_FLAG_NO_BUFFERING`), run **solo and against a plain foreground
+      reader**, because I/O priority is a contention mechanism and an idle device
+      cannot show it. The headline metric is what the *foreground* keeps —
+      `fg_prot%`. On an M1, `Background` leaves the foreground at 99.6% of its
+      uncontended throughput where `Default` leaves it 76.8%; see
+      [`BENCHMARKS.md`](BENCHMARKS.md). The "CPU-only" caveat is gone from the
+      README and this file.
 
 **Done and not blocking:** CI matrix, licenses/packaging, error causes, telemetry
 semver exemption, shutdown control, `current_thread`, Windows E/P telemetry,
-block-I/O priority on all three platforms, `QosClass` marked `#[non_exhaustive]`,
-MSRV policy stated, docs.rs feature badges.
+block-I/O priority on all three platforms **and its benchmark**, `QosClass`
+marked `#[non_exhaustive]`, MSRV policy stated, docs.rs feature badges.
 
 ### 0.9 → 1.0 — the evaluation window
 
@@ -111,7 +113,7 @@ what each one verified — the detail behind them is in `CHANGELOG.md`.
 | 2 | `Runtime` — tokio wrapper | ✅ Done — incl. blocking-pool classification |
 | 3 | Quiet thread + blocking spawn API | ✅ Done |
 | 4 | Telemetry (core / frequency / power) | ✅ Done — primitives; Sampler orchestration moved to Phase 5 |
-| 5 | Comparison harness (`bgrt-bench`) | ✅ Done — table/JSON + verdict + integration test |
+| 5 | Comparison harness (`bgrt-bench`) | ✅ Done — table/JSON + verdict + integration test. *Extended 2026-07-26:* `--workload io` adds the disk half (solo + contended, cache-bypassing) |
 | 6 | Docs, examples, polish | ✅ Done |
 | 7 | Road to 1.0 (CI, licensing, API freeze) | ✅ Done — CI matrix, licenses/packaging, error causes, shutdown control, `current_thread`, Windows E/P telemetry |
 | 8 | Block-I/O priority (`QosClass` covers disk) | ✅ Done — macOS free via QoS, Linux via `backend/ioprio.rs`, Windows via `THREAD_MODE_BACKGROUND_BEGIN` + memory-priority restore. Never the process-wide variant |
@@ -151,13 +153,13 @@ reasoning for each is in [`DESIGN.md`](DESIGN.md).
 
 | Gap | Standing |
 |---|---|
-| `bgrt-bench` measures CPU only, not disk | **Blocks 0.9** (above) |
+| Disk measured on macOS only | Closed as a *blocker*, open as coverage: `--workload io` runs everywhere, but the published numbers are from one M1. Linux needs a run per I/O scheduler (`none` is expected to show nothing); Windows needs a run at all |
 | Hybrid-Linux E-core pinning never run on P+E silicon | **Partly a software gap, not purely hardware-blocked** — see below. Needs Alder/Raptor/Meteor Lake to confirm end to end |
 | AMD hybrid (Zen 4c / Zen 5c) is not detected at all | Deliberate. No unprivileged interface exists to detect it — see below |
 | Windows throughput under contention unmeasured | Behaviour-tested in CI; performance reasoned from Microsoft's docs and from what Chromium ships |
-| macOS I/O coverage structurally unassertable | `setiopolicy_np` would opt the thread out of QoS entirely — deliberately never called. Guarded by a regression test |
+| macOS I/O coverage structurally unassertable | `setiopolicy_np` would opt the thread out of QoS entirely — deliberately never called, so the *policy* can't be read back. Guarded by a regression test — and, since 2026-07-26, its **effect** is measured instead: `--workload io` shows the throttle plainly (2 MiB/s vs 400) without reading any policy |
 | Windows E/P *labelling* branch unexercised | CI runners are homogeneous VMs. Placement is EcoQoS's job, so this affects telemetry only |
-| CI flake watch | `tests/comparison.rs` asserts background `max_mhz` ≤ default. Green so far; if it flakes, widen to a tolerance band rather than deleting it |
+| CI flake watch | `tests/comparison.rs` asserts background `max_mhz` ≤ default. Green so far; if it flakes, widen to a tolerance band rather than deleting it. Its disk test deliberately asserts **plumbing only** — a 0.2 s run on a shared virtualized disk cannot measure `fg_prot%` reliably, and a headline assertion there would flake by construction |
 | macOS `Background` can be very slow | E-core jail; `Utility` is the documented middle ground (LLVM/clangd hit exactly this) |
 
 ### Efficiency-core detection on x86 — what changed, and what is left

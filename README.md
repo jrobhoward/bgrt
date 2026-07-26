@@ -127,16 +127,42 @@ so a quieter executor completes *less* work in the same wall time. The example
 above (macOS, no sudo) shows Background doing ~31% of Default's work — the
 efficiency-core confinement, measured without any privileged telemetry.
 
-> **The benchmarks measure CPU only.** The workload is a CPU-bound loop, so
-> nothing below exercises the *disk* half of a `QosClass`. The I/O mapping is
-> behaviour-tested on each platform (see [Disk I/O](#disk-io-what-each-platform-actually-does))
-> but is not benchmarked; treat the "CPU *and* disk" claim as documented on the
-> disk side, measured on the CPU side.
-
 Flags: `--executors default,utility,background,background-threads` (subset/order),
 `--workers <n>`, `--format json`, `--interval <ms>` (sampling), `--pin` (Linux
 E-core affinity), `--clamp-frequency` (Linux `uclamp` frequency cap on background
 work), `--mac-power` (macOS `%E`/frequency/power via `powermetrics`).
+
+### Measuring the disk half (`--workload io`)
+
+`QosClass` governs CPU *and* block I/O, so the harness measures both.
+`--workload io` swaps the compute loop for random reads against a scratch file,
+and `--workload both` runs the two in sequence.
+
+```bash
+# Saturate the device: the classes only separate once something is queueing.
+cargo run --release -p bgrt-bench -- --workload io --duration 3 --workers 4 --io-foreground 4
+```
+
+Two design points make the numbers mean something:
+
+- **The reads bypass the page cache** — `O_DIRECT` (Linux), `F_NOCACHE` (macOS),
+  `FILE_FLAG_NO_BUFFERING` (Windows) — because a cached read measures `memcpy`,
+  and an I/O class only applies to requests that reach the block layer. Where
+  bypass isn't available (tmpfs, some filesystems) the run says `reads buffered`
+  and warns, rather than passing cache numbers off as disk numbers.
+- **Every executor runs twice: alone, then against a plain unclassified
+  foreground reader.** I/O priority is a *contention* mechanism; on an idle
+  device low-priority reads run at nearly full speed on all three platforms. So
+  the headline column is **`fg_prot%`** — what the foreground keeps, as a
+  percentage of its own uncontended baseline.
+
+Reads only, deliberately: buffered writes are issued to the device by a flusher
+thread, so they'd measure that thread's priority rather than the classified
+thread's.
+
+Disk flags: `--io-file-size-mib <n>` (default 512), `--io-block-kib <n>` (default
+64, must be a multiple of 4), `--io-foreground <n>` (competing plain threads),
+`--io-dir <path>`, `--io-keep` (reuse the scratch file between runs).
 
 ### Running on each platform
 
@@ -188,6 +214,29 @@ peaked at **1029 MHz vs 2751 MHz**, and drew **~12× less CPU power** (0.275 J v
 still ~4× less energy. This is the "stay on the efficiency cores, keep the clocks
 and fans down" goal, measured.
 
+### Headline result — disk, same M1 (`--workload io`, no privileges)
+
+```text
+disk: foreground baseline 1301.2 MiB/s, reads direct
+executor              solo_mib/s  cont_mib/s    fg_mib/s  fg_prot%    p95_us
+default                    988.5       996.6       998.7      76.8       394
+utility                   1058.4        12.7      1267.9      97.4     22770
+background                1003.0         7.9      1295.3      99.6     32870
+background-threads        1021.6         8.0      1294.0      99.5     32872
+verdict: background left the foreground ≥ (got out of the way) disk throughput than default did
+```
+
+Read `fg_prot%`: with a `Default`-class reader competing, the foreground app
+keeps **76.8%** of its solo throughput — an even split, which is what fair
+sharing looks like. With a `Background`-class reader it keeps **99.6%**: the
+quiet work stepped aside, dropping from ~1000 MiB/s solo to ~8 MiB/s and taking
+~33 ms per read instead of ~0.4 ms. That is the disk half of a `QosClass`,
+measured, unprivileged.
+
+Note `utility` throttles nearly as hard as `background` here — on macOS that is
+Apple's mapping, not a `bgrt` choice, and it is a genuine surprise given how
+close `Utility` is to `Default` on the CPU axis.
+
 **[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) has the full set** — three Linux
 machines, with the analysis. The short version of what they show:
 
@@ -226,6 +275,13 @@ Anything unavailable shows `n/a` / `null`, never an error:
 | core placement / %E | ✅ sysfs | ✅ `GetSystemCpuSetInformation` | needs `powermetrics` |
 | frequency | ✅ sysfs | ✅ `CallNtPowerInformation` | needs `powermetrics` |
 | energy | ✅ RAPL (often root) | — | `--mac-power` (needs `sudo`) |
+| disk throughput / `fg_prot%` | ✅ `O_DIRECT` † | ✅ `FILE_FLAG_NO_BUFFERING` | ✅ `F_NOCACHE` |
+
+† Unprivileged everywhere, including macOS — the disk workload needs no
+`powermetrics`. On Linux the *result* still depends on the I/O scheduler: `bfq`
+honours priority fully, `mq-deadline` partially, and `none` (a common NVMe
+default) not at all. The harness reads the active scheduler and says so, so a
+null result there isn't mistaken for a broken class.
 
 So on **Linux** and **Windows** you get placement and frequency unprivileged
 (Linux energy may need root for RAPL; Windows has no energy counter at all); on

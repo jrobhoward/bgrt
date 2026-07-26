@@ -1,8 +1,11 @@
 //! Formatting the comparison results as a table or JSON, plus the headline
-//! "did the quiet class stay cooler?" check.
+//! "did the quiet class stay cooler?" and "did it yield the disk?" checks.
 
 use serde::Serialize;
 
+use crate::io_file::CacheBypass;
+use crate::io_runner::IoRunResult;
+use crate::io_workload::PhaseStats;
 use crate::runner::RunResult;
 
 /// A flat, serializable summary of one executor's run.
@@ -123,6 +126,151 @@ pub fn background_not_hotter(summaries: &[Summary]) -> Option<bool> {
 
 fn opt(v: Option<String>) -> String {
     v.unwrap_or_else(|| "n/a".to_owned())
+}
+
+// --- disk ------------------------------------------------------------------
+
+/// A flat, serializable summary of one executor's disk run.
+#[derive(Debug, Clone, Serialize)]
+pub struct IoSummary {
+    /// Executor label (e.g. `background`).
+    pub executor: String,
+    /// Executor throughput reading alone (MiB/s).
+    pub solo_mib_s: f64,
+    /// Executor throughput while the foreground threads read (MiB/s).
+    pub contended_mib_s: f64,
+    /// Foreground throughput during that contended window (MiB/s).
+    pub foreground_mib_s: f64,
+    /// Foreground throughput as a percentage of its uncontended baseline — the
+    /// headline "did the quiet class get out of the way?" figure. `None` if the
+    /// baseline measured nothing.
+    pub foreground_protection_pct: Option<f64>,
+    /// Executor reads per second while alone.
+    pub solo_iops: f64,
+    /// Median executor read latency under contention (µs).
+    pub p50_us: Option<u32>,
+    /// 95th-percentile executor read latency under contention (µs).
+    pub p95_us: Option<u32>,
+    /// 99th-percentile executor read latency under contention (µs).
+    pub p99_us: Option<u32>,
+    /// Executor reads completed under contention.
+    pub reads: u64,
+    /// Failed reads across both phases.
+    pub errors: u64,
+    /// Whether these reads reached the device or may have been served from cache.
+    pub cache_bypass: CacheBypass,
+}
+
+impl IoSummary {
+    /// Derive a summary from a raw disk result, given the foreground baseline
+    /// every executor is measured against.
+    pub fn from_result(r: &IoRunResult, baseline: &PhaseStats) -> Self {
+        let base_mib_s = baseline.mib_per_s();
+        let foreground_mib_s = r.foreground.mib_per_s();
+        let foreground_protection_pct =
+            (base_mib_s > 0.0).then(|| foreground_mib_s / base_mib_s * 100.0);
+
+        Self {
+            executor: r.executor.label().to_owned(),
+            solo_mib_s: r.solo.mib_per_s(),
+            contended_mib_s: r.contended.mib_per_s(),
+            foreground_mib_s,
+            foreground_protection_pct,
+            solo_iops: r.solo.iops(),
+            p50_us: r.contended.p50_us,
+            p95_us: r.contended.p95_us,
+            p99_us: r.contended.p99_us,
+            reads: r.contended.reads,
+            errors: r.solo.errors.saturating_add(r.contended.errors),
+            cache_bypass: r.solo.bypass.merge(r.contended.bypass),
+        }
+    }
+}
+
+/// The disk report: the shared baseline plus one row per executor.
+#[derive(Debug, Clone, Serialize)]
+pub struct IoReport {
+    /// Foreground throughput with nothing else running (MiB/s).
+    pub foreground_baseline_mib_s: f64,
+    /// Whether the baseline reads reached the device.
+    pub cache_bypass: CacheBypass,
+    /// Active Linux I/O scheduler for the scratch file's device, where known —
+    /// `none` ignores I/O priority entirely.
+    pub io_scheduler: Option<String>,
+    /// One row per executor.
+    pub rows: Vec<IoSummary>,
+}
+
+/// Render the disk report as an aligned text table.
+pub fn io_table(report: &IoReport) -> String {
+    let mut out = format!(
+        "{:<20} {:>11} {:>11} {:>11} {:>9} {:>9}\n",
+        "executor", "solo_mib/s", "cont_mib/s", "fg_mib/s", "fg_prot%", "p95_us"
+    );
+    for s in &report.rows {
+        out.push_str(&format!(
+            "{:<20} {:>11.1} {:>11.1} {:>11.1} {:>9} {:>9}\n",
+            s.executor,
+            s.solo_mib_s,
+            s.contended_mib_s,
+            s.foreground_mib_s,
+            opt(s.foreground_protection_pct.map(|v| format!("{v:.1}"))),
+            opt(s.p95_us.map(|v| v.to_string())),
+        ));
+    }
+    out
+}
+
+/// Render the disk report as pretty JSON.
+///
+/// # Errors
+///
+/// Returns any [`serde_json`] serialization error.
+pub fn io_json(report: &IoReport) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(report)
+}
+
+/// Both reports in one JSON document, for `--workload both --format json`.
+#[derive(Debug, Serialize)]
+struct Combined<'a> {
+    cpu: &'a [Summary],
+    io: &'a IoReport,
+}
+
+/// Render the CPU and disk reports as a single pretty JSON object.
+///
+/// # Errors
+///
+/// Returns any [`serde_json`] serialization error.
+pub fn combined_json(cpu: &[Summary], io: &IoReport) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(&Combined { cpu, io })
+}
+
+/// Protection level above which the `default` executor is judged not to have
+/// dented the foreground — i.e. the device still had spare queue depth.
+const SATURATION_PCT: f64 = 90.0;
+
+/// Whether the run actually loaded the device enough for the classes to be
+/// distinguishable. If even `default` leaves the foreground near its baseline,
+/// nothing was contended for and the disk table says little. Unknown rows count
+/// as saturated, so the hint only fires when there is something to say.
+pub fn device_saturated(rows: &[IoSummary]) -> bool {
+    rows.iter()
+        .find(|s| s.executor == "default")
+        .and_then(|s| s.foreground_protection_pct)
+        .is_none_or(|pct| pct <= SATURATION_PCT)
+}
+
+/// Whether the `background` executor left the foreground more disk than the
+/// `default` executor did — the headline "quiet work yields the device" check.
+///
+/// Returns `None` if either executor is absent or the baseline was unmeasurable,
+/// so callers can skip rather than fail.
+pub fn background_yields_disk(rows: &[IoSummary]) -> Option<bool> {
+    let find = |label: &str| rows.iter().find(|s| s.executor == label);
+    let bg = find("background")?;
+    let def = find("default")?;
+    Some(bg.foreground_protection_pct? >= def.foreground_protection_pct?)
 }
 
 #[cfg(test)]

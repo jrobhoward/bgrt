@@ -8,6 +8,37 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### `bgrt-bench` measures disk, closing the last 0.9 blocker — 2026-07-26
+
+- **Added `--workload cpu|io|both`.** `io` runs random, page-cache-bypassing
+  reads against a scratch file: `O_DIRECT` (Linux), `F_NOCACHE` (macOS),
+  `FILE_FLAG_NO_BUFFERING` (Windows), with 4 KiB-aligned buffers and offsets.
+  Where a filesystem refuses, the run is labelled `buffered` and warns rather
+  than reporting page-cache throughput as disk throughput.
+- **Each executor runs solo *and* against plain unclassified foreground
+  threads**, because I/O priority only decides who waits — an idle device shows
+  nothing. The headline column is `fg_prot%`: what the foreground keeps relative
+  to its own uncontended baseline. New flags: `--io-file-size-mib`,
+  `--io-block-kib`, `--io-foreground`, `--io-dir`, `--io-keep`.
+- **Result (M1, unprivileged): `Background` drops ~1000 → 7.9 MiB/s under
+  contention, leaving the foreground at 99.6% of baseline vs 76.8% for
+  `Default`** — and 7.9 MiB/s is slow, not stopped, which is the weighted-fair
+  requirement in a number. Full tables in `docs/BENCHMARKS.md`; the "benchmarks
+  measure CPU only" caveat is gone from the README, `DESIGN.md` and `ROADMAP.md`.
+- **Two findings worth flagging.** `Utility` throttles nearly as hard as
+  `Background` on macOS (Apple's mapping — unlike the CPU axis, where `Utility`
+  tracks `Default`), and an unsaturated device makes `Default` look equally
+  polite, so the harness now detects that and prints a hint instead of letting
+  the table mislead.
+- **Reads only, and warm-up by reading rather than sleeping.** Buffered writes
+  are issued by the flusher thread, so they'd measure its priority, not the
+  classified thread's. And a sleeping background thread on macOS wakes *after*
+  its measurement window (timer deferral for `QOS_CLASS_BACKGROUND`) — the first
+  implementation recorded zero reads for exactly the class under test.
+- Linux runs additionally report the device's active I/O scheduler; `none`, a
+  common NVMe default, ignores priority entirely, so a null result there is
+  attributable rather than mysterious.
+
 ### Efficiency-core detection was blind to every Intel hybrid CPU — 2026-07-26
 
 - **Fixed: `topology::efficiency_cores()` read only sysfs `cpu_capacity`, which

@@ -34,7 +34,8 @@ impl Executor {
         }
     }
 
-    fn qos(self) -> QosClass {
+    /// The class this executor applies to its threads.
+    pub fn qos(self) -> QosClass {
         match self {
             Executor::Default => QosClass::Default,
             Executor::Utility => QosClass::Utility,
