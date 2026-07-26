@@ -323,6 +323,10 @@ that is EcoQoS's job, not ours.
   worker or thread starts; there's no per-task re-classification. Pick the right
   runtime/thread for the work. (This also sidesteps that, on Linux, an
   unprivileged thread can lower its priority but **cannot raise it back**.)
+  Applying `Default` to an already-quiet thread — or building any runtime inside
+  an already-niced process (`nice -n 10 …`, systemd `Nice=`) — therefore leaves
+  Linux niceness where it is. `apply` reports success rather than surfacing an
+  `EACCES` the caller could do nothing about; macOS and Windows do restore.
 - **macOS join-promotion:** synchronously waiting on a background thread from a
   higher-QoS thread can promote it off the efficiency cores (see the benchmarking
   note above). Async `await` on a background runtime does not.

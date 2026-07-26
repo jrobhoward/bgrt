@@ -38,6 +38,20 @@
 ///   weighted-fair share, so expect low throughput under sustained foreground
 ///   load.
 ///
+/// # Classification is not reversible on Linux
+///
+/// [`QosClass::Default`] restores a thread on macOS and Windows, but on Linux it
+/// cannot: `nice` is one-way for an unprivileged thread (`RLIMIT_NICE` defaults
+/// to 0, putting the floor at the thread's current value), so the kernel refuses
+/// to lower a nice value that `Background` or `Utility` already raised. The same
+/// applies to a process started already niced — `nice -n 10 …`, systemd `Nice=`
+/// — where even a fresh thread starts above 0.
+///
+/// `bgrt` treats that refusal as a no-op rather than an error: [`crate::apply`]
+/// returns `Ok`, and the thread keeps the niceness it had. Classify a thread
+/// once, at creation, and use a second runtime or pool rather than expecting to
+/// reclassify — which is what the builders' thread hooks are for.
+///
 /// # Threads spawned by classified threads
 ///
 /// A class applies to the thread it was applied to — **not** to threads that

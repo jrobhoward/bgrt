@@ -8,6 +8,7 @@ use std::fmt;
 
 use crate::error::Error;
 use crate::qos::QosClass;
+use crate::thread::classify;
 use crate::topology;
 
 /// Builder for an energy-classified [`RayonPool`].
@@ -117,21 +118,11 @@ impl RayonBuilder {
             builder = builder.thread_name(move |idx| format!("{name}-{idx}"));
         }
 
-        builder = builder.start_handler(move |_idx| {
-            if let Err(e) = crate::apply(qos) {
-                tracing::warn!(error = %e, "bgrt: failed to apply qos to rayon thread");
-            }
-            if !efficiency_cores.is_empty() {
-                if let Err(e) = topology::pin_current_thread(&efficiency_cores) {
-                    tracing::warn!(error = %e, "bgrt: failed to pin rayon thread to efficiency cores");
-                }
-            }
-            if clamp_frequency {
-                if let Err(e) = crate::backend::clamp_current_thread(qos) {
-                    tracing::warn!(error = %e, "bgrt: failed to clamp rayon thread frequency");
-                }
-            }
-        });
+        // The same qos → pin → clamp step every bgrt-spawned thread runs; see
+        // `thread::classify`. Shared rather than reimplemented so a knob added to
+        // one builder cannot silently skip this one.
+        builder =
+            builder.start_handler(move |_idx| classify(qos, &efficiency_cores, clamp_frequency));
 
         let inner = builder
             .build()

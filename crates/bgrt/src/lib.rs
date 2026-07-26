@@ -90,13 +90,23 @@ pub use thread::{ThreadBuilder, spawn_thread};
 
 /// Apply an energy [`QosClass`] to the **current** thread.
 ///
-/// This only ever *lowers* the calling thread's scheduling demands, so it never
-/// requires elevated privileges. Classification is intended to happen once,
-/// early in a thread's life (for example from a runtime's thread-start hook).
+/// This never requires elevated privileges: lowering a thread's scheduling
+/// demands is always permitted, and where the reverse is *not* — raising them
+/// back — `bgrt` declines rather than demanding privileges it promises not to
+/// need. Classification is intended to happen once, early in a thread's life
+/// (for example from a runtime's thread-start hook).
+///
+/// On Linux that reverse direction is genuinely unavailable: `nice` is one-way
+/// for an unprivileged thread, so applying [`QosClass::Default`] to a thread
+/// already classified `Background` (or running in an already-niced process)
+/// leaves its niceness where it is and still returns `Ok`. macOS and Windows can
+/// restore. See [`QosClass`] for the full picture.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Backend`] if the underlying OS call fails.
+/// Returns [`Error::Backend`] if the underlying OS call fails. A kernel refusing
+/// an optional hint — an unraisable `nice`, an absent `ioprio_set`, a governor
+/// without `uclamp` — is not a failure and does not appear here.
 ///
 /// # Examples
 ///

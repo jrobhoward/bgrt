@@ -8,6 +8,54 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Linux `Default` no longer fails in an already-niced process — 2026-07-25
+- **Fixed: `apply(QosClass::Default)` returned an error whenever the calling
+  thread's nice value was already above 0.** `setpriority` is refused with
+  `EACCES` when asked to *lower* a nice value, because `RLIMIT_NICE` defaults to
+  0 — the one-way `nice` this project already documents as the reason
+  `RuntimeBuilder::current_thread` owns its driver thread. The `Default` mapping
+  called it unconditionally anyway, so two ordinary situations produced a failure
+  the caller could not act on:
+  - a process started already niced (`nice -n 10 …`, systemd `Nice=`, a container
+    with a nice offset), where a `Default`-class runtime errored on *every*
+    worker and logged a warning per thread — `examples/mixed_runtimes.rs` is
+    exactly that shape; and
+  - applying `Default` to a thread previously classified `Background`, which
+    cannot be undone at all.
+- **Now a graceful no-op:** `EACCES`/`EPERM` from `setpriority` degrade to a
+  `debug!` and `Ok`, matching how `ioprio` and `uclamp` already handle a kernel
+  declining a hint. The thread keeps the niceness it had. Only those two errnos
+  are absorbed — with `who == 0` they can only mean "you asked to raise
+  priority", so a genuine failure still surfaces.
+- **This was already the crate's own reasoning, applied inconsistently.**
+  `backend/ioprio.rs` deliberately writes nothing for `Default`, on the grounds
+  that doing so "would be the one place this backend raised a priority instead of
+  lowering it". The same argument governs `setpriority` and had not been carried
+  across.
+- **Three new Linux tests** covering reclassification in both directions:
+  `Default` and `Utility` after `Background` degrade to a no-op and hold nice 19;
+  `Background` after `Utility` still lowers, since lowering is always permitted.
+  The pre-existing `Default` test only ever ran on a fresh thread already at nice
+  0, where the call trivially succeeds — which is why this went unnoticed.
+- **Documented** on `QosClass` (new "classification is not reversible on Linux"
+  section), `apply`, the Linux backend module, and the README limitation that
+  previously stated the constraint without saying what `bgrt` does about it. The
+  `apply` doc claim that it "only ever *lowers* … so it never requires elevated
+  privileges" was true of intent but false of behaviour; it now says `bgrt`
+  declines rather than demands.
+- Known consequence, recorded rather than papered over: best-effort I/O levels
+  carry no such privilege check, so reclassifying `Background` → `Utility` moves
+  the I/O half to level 6 while niceness stays at 19. Classify once at thread
+  creation.
+
+### Rayon pool shares `thread::classify` instead of copying it — 2026-07-25
+- **`RayonBuilder`'s `start_handler` reimplemented the qos → pin → clamp
+  sequence by hand**, against the stated invariant that it is "one function,
+  three call sites". Behaviour is unchanged today; the risk was that a knob added
+  to `classify` would reach `RuntimeBuilder` and `ThreadBuilder` and silently
+  skip rayon pools — the exact failure the "three builders are deliberately
+  parallel" rule exists to prevent. Now calls `classify` like the other two.
+
 ### Thread-classification inheritance: measured and documented — 2026-07-25
 - **A `QosClass` does not follow threads spawned by a classified thread, except
   on Linux.** Previously undocumented, and the failure is silent. Measured:
