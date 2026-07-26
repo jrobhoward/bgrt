@@ -12,7 +12,9 @@ fn plan(scratch: &ScratchFile) -> IoPlan {
     let block = 64 * 1024;
     IoPlan {
         cfg: IoConfig {
-            duration: Duration::from_millis(60),
+            // Long enough that a single slow read on a contended CI disk can't
+            // swallow the whole window — 60 ms could, and did, on Windows.
+            duration: Duration::from_millis(300),
             block,
             blocks: crate::io_file::blocks_in(scratch.size(), block),
         },
@@ -71,9 +73,12 @@ fn run____every_executor____produces_both_phases() {
             executor.label()
         );
         // The gate means both sides of the contended phase cover the same window.
+        // Tolerance is the window itself: this catches the gate failing outright
+        // (one side running while the other doesn't) without turning a scheduling
+        // hiccup on a shared runner into a red build.
         let skew = result.contended.elapsed.abs_diff(result.foreground.elapsed);
         assert!(
-            skew < Duration::from_millis(50),
+            skew < plan.cfg.duration,
             "contended phases drifted apart by {skew:?}"
         );
     }

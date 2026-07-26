@@ -80,6 +80,13 @@ the project is pre-1.0 and not yet released.
 - Linux runs additionally report the device's active I/O scheduler; `none`, a
   common NVMe default, ignores priority entirely, so a null result there is
   attributable rather than mysterious.
+- **Every worker now counts at least one read**, matching the CPU workload's
+  "at least one sample even for very short runs". A synchronous read can't be
+  cancelled, so the last warm-up read can start just under the gate and finish
+  past the deadline — on Windows CI's virtualized disk that single read outlasted
+  a short window and the phase reported zero reads over zero elapsed, i.e. an
+  executor that looked broken rather than slow. Caught by CI on Windows; guarded
+  by a deterministic test using an already-closed window.
 
 ### Efficiency-core detection was blind to every Intel hybrid CPU — 2026-07-26
 

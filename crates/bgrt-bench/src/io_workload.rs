@@ -88,9 +88,18 @@ fn read_until(reader: Reader, cfg: IoConfig, seed: u64, gate: Instant) -> Worker
         let _ = reader.read_at(buf.as_mut_slice(), offset);
     }
 
+    // Always at least one counted read, even if the window has already closed by
+    // the time we get here — hence the loop-with-break rather than a `while`.
+    // A synchronous read can't be cancelled, so the last warm-up read can start
+    // just under the gate and finish past the deadline; on a contended
+    // virtualized disk that single read can outlast a short window on its own.
+    // Recording nothing there would report 0 MiB/s over a zero-length elapsed —
+    // an executor that looks broken rather than slow, which is the failure mode
+    // this harness exists to avoid. `workload::run` makes the same guarantee for
+    // the CPU side ("at least one sample even for very short runs").
     let deadline = gate + cfg.duration;
     let start = Instant::now();
-    while Instant::now() < deadline {
+    loop {
         let offset = next_offset(&mut rand);
         let issued = Instant::now();
         match reader.read_at(buf.as_mut_slice(), offset) {
@@ -103,6 +112,9 @@ fn read_until(reader: Reader, cfg: IoConfig, seed: u64, gate: Instant) -> Worker
                 }
             }
             Err(_) => stats.errors = stats.errors.saturating_add(1),
+        }
+        if Instant::now() >= deadline {
+            break;
         }
     }
     stats.elapsed = start.elapsed();

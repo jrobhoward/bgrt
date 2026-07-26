@@ -108,3 +108,33 @@ fn run_reader____missing_file____reports_an_error_rather_than_panicking() {
     assert_eq!(stats.reads, 0);
     assert_eq!(stats.errors, 1);
 }
+
+#[test]
+fn run_reader____window_already_closed____still_records_one_read() {
+    // The Windows CI failure this guards: a slow read straddles a short window,
+    // the deadline passes during it, and the worker would otherwise report zero
+    // reads over zero elapsed — indistinguishable from a broken executor. A
+    // zero-length window reproduces that deterministically, with no timing race.
+    let dir = tempfile::tempdir().unwrap();
+    let block = 64 * 1024;
+    let scratch = ScratchFile::create(dir.path(), 4 * 1024 * 1024, false).unwrap();
+    let cfg = IoConfig {
+        duration: Duration::ZERO,
+        block,
+        blocks: crate::io_file::blocks_in(scratch.size(), block),
+    };
+
+    let stats = run_reader(scratch.path(), cfg, 99, Instant::now());
+    assert_eq!(
+        stats.reads, 1,
+        "expected exactly one read for a closed window"
+    );
+    assert_eq!(stats.errors, 0);
+    assert!(
+        stats.elapsed > Duration::ZERO,
+        "elapsed must be non-zero so throughput is finite"
+    );
+    // ...and that read is a real one, so the phase reports throughput, not 0.0.
+    let phase = PhaseStats::merge(vec![stats]);
+    assert!(phase.mib_per_s() > 0.0);
+}
