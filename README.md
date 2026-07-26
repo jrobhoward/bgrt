@@ -316,11 +316,63 @@ that is EcoQoS's job, not ours.
 - **macOS join-promotion:** synchronously waiting on a background thread from a
   higher-QoS thread can promote it off the efficiency cores (see the benchmarking
   note above). Async `await` on a background runtime does not.
+- **`bgrt` classifies CPU work only.** It does not deprioritize disk I/O, and it
+  is very unlikely to ever touch GPU work — see
+  [Scope: what `bgrt` is not](#scope-what-bgrt-is-not) below.
+- **On macOS, `Background` also throttles disk I/O** — not because `bgrt` asks
+  for it, but because `QOS_CLASS_BACKGROUND` implies it on Darwin. Linux and
+  Windows do not do this, so a file-heavy background task is quieter on macOS
+  than on the other two platforms. Worth knowing before you compare I/O-bound
+  numbers across machines.
 - **Telemetry availability varies** (see the table above): Linux is fullest
   unprivileged; macOS frequency/power/residency need `sudo powermetrics`; Windows
   reports frequency, CPU index, and E/P classification, but has no energy
   counter. Linux RAPL energy is often root-only. The *library* never needs
   privileges — only measurement does.
+
+## Scope: what `bgrt` is not
+
+**I/O priority — maybe in 1.1, if there's demand.** Every target OS exposes an
+unprivileged per-thread I/O priority (`setiopolicy_np`, `ioprio_set`,
+`THREAD_MODE_BACKGROUND_BEGIN`), and it's the same shape as the CPU knob, so it
+would fit without new architecture. It's not in 1.0 because nobody has asked, and
+because on Linux it does nothing under the `none` I/O scheduler that's a common
+NVMe default — the same kind of null result as `nice` on a homogeneous CPU. If
+you want it, open an issue; that's the demand signal. Design notes are in
+[`docs/DESIGN.md`](docs/DESIGN.md#scope-cpu-now-io-maybe-gpu-probably-never).
+
+**GPU — probably never.** Not on the roadmap, and it would take a shift in the
+platforms to get there. As things stand today:
+
+- There is **no OS-level per-thread GPU QoS** on macOS, Windows, or Linux. The
+  whole library rests on one primitive all three expose with the same meaning,
+  and no GPU equivalent exists. What exists is per-API and mutually incompatible
+  (Vulkan, CUDA, D3D12, Metal — the last has no queue priority at all).
+- Those APIs **arbitrate contention; they are not energy levers.** Lowering GPU
+  priority makes your work wait. It doesn't downclock the GPU or move work to
+  lower-power units — and a GPU idling at high clocks while your work waits can
+  burn *more* energy for the same result.
+- On Windows there's **no tier below normal** to ask for (D3D12 offers normal,
+  high, global-realtime), so the central operation — "ask for less" — has no
+  expression.
+- **The threading model doesn't transfer.** `bgrt` classifies a thread once at
+  start; GPU work is submitted to a queue owned by a device context. There's no
+  thread to classify.
+- **For AI workloads the real levers are elsewhere:** choosing a low-power
+  compute unit (ANE via CoreML, NPU via DirectML, integrated over discrete),
+  cutting batch size and concurrency, or quantizing. Those are model- and
+  framework-level decisions a thread-QoS crate can't make, and shipping a GPU
+  knob here would look like it saves energy without doing so.
+
+GPU energy matters — it's that *today* the lever isn't a scheduling hint, so it
+doesn't belong in a scheduling-hint library. Four of those five objections
+describe what the platforms currently expose, not a principle, so the question is
+worth reopening if any of them change: an OS shipping a per-context GPU energy
+QoS that's unprivileged to lower; graphics APIs growing an eco tier that affects
+clocks or unit placement rather than only queue order; inference runtimes
+converging on a portable low-power mode; or GPU submissions inheriting the
+classification of the thread that queued them. The conditions are spelled out in
+[`docs/DESIGN.md`](docs/DESIGN.md#gpu--probably-never-but-heres-what-would-change-that).
 
 ## Development
 

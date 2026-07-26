@@ -8,6 +8,50 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Scope decision: I/O deferred, GPU probably never — 2026-07-25
+- **`bgrt` is a CPU scheduling-hint library, and now says so.** Recorded in
+  `docs/DESIGN.md` (*Scope: CPU now, I/O maybe, GPU probably never*), the README
+  (*Scope: what `bgrt` is not*), the non-goals list, and the roadmap's open
+  questions — so the "what about X" question is answered once rather than
+  re-litigated. Both answers are written as **contingent**, with the conditions
+  that should reopen them stated explicitly, rather than as permanent rulings.
+- **I/O priority: deferred to a possible 1.1, gated on demand.** It is a genuine
+  second axis — all three OSes expose an unprivileged, per-thread,
+  set-once-at-thread-start I/O priority (`setiopolicy_np`, `ioprio_set`,
+  `SetThreadPriority(THREAD_MODE_BACKGROUND_BEGIN)`), which is exactly the shape
+  of the existing CPU knob. Held back because nobody has asked, and because two
+  platforms need measurement first: on Linux `ioprio` is inert under the `none`
+  scheduler that is a common NVMe default (another `nice`-on-homogeneous-CPU-type
+  null result), and on Windows the mechanism also lowers CPU and memory priority,
+  so it would change existing `Background` behaviour rather than just add an
+  axis. If it lands it folds into `QosClass` instead of becoming a fourth builder
+  knob.
+- **GPU: probably never, and not on the roadmap.** No OS-level per-thread GPU QoS
+  exists on any target platform *today*; the per-API priorities that do exist
+  (Vulkan, CUDA, D3D12; Metal has none) arbitrate contention rather than reduce
+  energy — a deprioritized GPU idling at high clocks can burn *more* energy for
+  the same work; D3D12 has no tier below normal, so "ask for less" has no
+  expression; and GPU work belongs to a queue owned by a device context, not to a
+  classifiable thread. For AI workloads the real energy levers (compute-unit
+  selection, batch size, quantization) are framework-level and outside what a
+  thread-QoS crate can reach.
+  - **Stated as contingent, not final.** Four of those five objections describe
+    what the platforms currently expose rather than a principle, so DESIGN now
+    lists what would reopen the question: an OS shipping a per-context GPU energy
+    QoS that is unprivileged to lower and set once; graphics APIs growing an eco
+    tier that moves clocks or unit placement rather than only queue order;
+    inference runtimes converging on a portable low-power mode; or GPU
+    submissions inheriting the classification of the thread that queued them. The
+    objection to re-test is "a GPU knob here would look like an energy control
+    without being one" — not the conclusion drawn from it.
+- **Newly documented existing behaviour: `Background` throttles disk I/O on
+  macOS, and only there.** `QOS_CLASS_BACKGROUND` implies I/O throttling on
+  Darwin, which `bgrt` never asked for and never disclosed; Linux `nice(19)` and
+  Windows EcoQoS do not. So a file-heavy background task is quieter on macOS than
+  on the other two platforms. Now called out in the README limitations and the
+  DESIGN findings — it is also the reason the I/O axis above would *equalize* the
+  platforms rather than add something new.
+
 ### Windows E/P core classification — 2026-07-25
 - **`telemetry::CoreType` is no longer `Unknown` on Windows.** `topology::
   efficiency_cores()` gained a Windows implementation over the CPU Sets API

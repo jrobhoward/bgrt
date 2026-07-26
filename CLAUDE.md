@@ -9,6 +9,14 @@ energy footprint — efficiency cores, low clock frequency, no fan spin-up — w
 still making forward progress under load, as a regular (non-admin) user on
 macOS, Windows, and Linux. It **wraps** tokio rather than forking it.
 
+**Scope is CPU only.** I/O priority is deferred to a possible 1.1 (demand-gated);
+**GPU is probably never** — no OS exposes a per-thread GPU QoS today, the per-API
+priorities that exist arbitrate contention rather than save energy, and GPU work
+belongs to a queue rather than to a classifiable thread. Both answers are
+contingent on the state of the platforms, and `docs/DESIGN.md` → *Scope: CPU now,
+I/O maybe, GPU probably never* lists what would reopen each. Read it before
+adding either.
+
 See `docs/DESIGN.md` for the durable design and rationale, `docs/ROADMAP.md` for
 the phased plan and current status, and `CHANGELOG.md` for running project state.
 

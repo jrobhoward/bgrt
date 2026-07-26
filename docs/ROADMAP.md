@@ -291,6 +291,20 @@ Phase 7): Windows E/P classification, and CI to execute the Linux/Windows paths.
   scheduler on a `bgrt`-owned, classified thread. See `docs/DESIGN.md`.
 - ~~**No current-thread runtime**~~ — ✅ Resolved (Phase 7) as
   `RuntimeBuilder::current_thread(bool)`, with `bgrt` owning the driver thread.
+- **What about I/O and GPU scheduling?** — Answered as a scope decision (see
+  `docs/DESIGN.md` → *Scope: CPU now, I/O maybe, GPU probably never*), but left
+  open rather than struck through, because both answers are contingent. **I/O**
+  is a real second axis with an unprivileged per-thread mechanism on all three
+  OSes; deferred to a possible **1.1, gated on demand**, and would fold into
+  `QosClass` rather than becoming a fourth builder knob. **GPU is probably
+  never** — no OS-level per-thread GPU QoS exists anywhere today, the per-API
+  priorities that do exist arbitrate contention rather than save energy, D3D12
+  has no tier below normal, and GPU work is owned by a queue rather than by a
+  classifiable thread. Those are statements about the current platforms, not a
+  principle: DESIGN lists the specific developments (an unprivileged per-context
+  GPU energy QoS, an eco tier that moves clocks rather than queue order, a
+  portable low-power mode in inference runtimes, or submissions that inherit the
+  queueing thread's class) that should reopen it.
 - **Hybrid-Linux E-core pinning is unverified** — the selection logic is
   unit-tested, but the sysfs read and `sched_setaffinity` have never run against
   a non-empty core set (no P+E hardware available). Documented as a caveat in the

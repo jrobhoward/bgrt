@@ -30,6 +30,16 @@ it onto a quiet executor.
   it belongs to cgroups, and it isn't the "stay cool" goal. Deliberately omitted.
 - Dynamic per-*task* re-classification. Classification is per-thread, set once.
 - Being a general tokio replacement — `bgrt` *configures* a tokio runtime.
+- **GPU work of any kind** — see
+  [Scope](#scope-cpu-now-io-maybe-gpu-probably-never). Not on the roadmap and
+  unlikely ever to be, but the objections are about the current state of the
+  platforms rather than about principle, so they are written as conditions that
+  could change.
+
+`bgrt` is a **CPU** scheduling-hint library. I/O priority is a plausible second
+axis, deferred to a possible 1.1; GPU is out of scope for the foreseeable future.
+The reasoning for both is below, because "why don't you do X" is a question worth
+answering once in writing.
 
 ## The mechanism
 
@@ -190,6 +200,113 @@ The **library never needs privileges** — it only lowers its own threads. Only 
 *measurement harness* may need elevation: macOS `powermetrics` (sudo) for
 frequency/power/residency, and Linux RAPL energy (often root since CVE-2020-8694).
 
+## Scope: CPU now, I/O maybe, GPU probably never
+
+`bgrt` classifies **CPU** work. The two obvious "what about…" questions have
+different answers, recorded here so they don't get re-litigated — and, for the
+GPU one, so that the conditions under which the answer *should* be revisited are
+written down rather than left to memory.
+
+### I/O priority — deferred to a possible 1.1, demand-gated
+
+I/O is a genuine second axis and a natural fit: every target OS exposes an
+unprivileged, per-thread, set-once-at-thread-start I/O priority, which is exactly
+the shape of the existing CPU knob and would drop into `backend/*.rs` and
+`thread::classify` without new architecture.
+
+| | Mechanism | Unprivileged to lower |
+|---|---|---|
+| macOS | `setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD, IOPOL_THROTTLE)` | yes |
+| Linux | `ioprio_set(IOPRIO_WHO_PROCESS, 0, IOPRIO_CLASS_IDLE)` (pid 0 = calling thread) | yes, since 2.6.25 for `IDLE` |
+| Windows | `SetThreadPriority(THREAD_MODE_BACKGROUND_BEGIN)` — lowers CPU, I/O *and* memory priority together | yes, calling thread only |
+
+It is **not** in 1.0 because nobody has asked for it, and because two of the
+three platforms come with caveats that need measuring before the feature could
+honestly be advertised:
+
+- **Linux would be another documented null result on common hardware.**
+  `ioprio` only bites with an I/O scheduler that honours it: BFQ does fully,
+  `mq-deadline` gained support in 5.18, and **`none` — a common default for NVMe
+  — ignores it entirely.** On a modern NVMe machine the call would succeed and do
+  nothing, structurally identical to the `nice`-on-a-homogeneous-CPU result
+  already documented below. That is shippable, but only with the same honest
+  caveat treatment.
+- **Windows' mechanism is coarser than the current CPU mapping.**
+  `THREAD_MODE_BACKGROUND_BEGIN` is a begin/end pair that lowers CPU *and* memory
+  priority alongside I/O, so adopting it would change the existing `Background`
+  CPU behaviour, not just add an axis — which bears on the never-starve
+  requirement. How it composes with the `THREAD_POWER_THROTTLING_EXECUTION_SPEED`
+  call already made in `backend/windows.rs` is unverified.
+- **macOS needs nothing.** `QOS_CLASS_BACKGROUND` already implies disk-I/O
+  throttling; see the findings below, where this is recorded as a current
+  cross-platform asymmetry rather than a future feature.
+
+If it lands, the design call is to **fold it into `QosClass`** rather than add a
+fourth builder knob: `Background` would mean "quiet CPU *and* quiet I/O", which
+is what macOS already does, so folding makes the platforms consistent instead of
+adding an axis users must learn.
+
+### GPU — probably never, but here's what would change that
+
+Not on the roadmap, and it would take a real shift in the platforms to get there.
+Five reasons, each sufficient on its own **as things stand today**:
+
+1. **There is no OS-level per-thread GPU QoS on any target platform.** The CPU
+   design rests on one primitive that macOS, Windows, and Linux all expose with
+   the same meaning. No such primitive exists for GPUs. What exists is per-API
+   and mutually incompatible: Vulkan `VK_KHR_global_priority`, CUDA stream
+   priorities, D3D12 command-queue priority, and Metal (which has no queue
+   priority API at all). There is no common concept to wrap.
+2. **Those APIs arbitrate contention; they are not energy levers.** Lowering a
+   GPU queue's priority makes your work *wait*. It does not downclock the GPU,
+   does not move work to lower-power units, and does not reduce power draw. A GPU
+   idling at high clocks while your deprioritized work waits can burn **more**
+   energy for the same result — the precise opposite of this library's goal.
+3. **On Windows there is no low tier to ask for.** D3D12 offers `NORMAL`, `HIGH`,
+   and `GLOBAL_REALTIME`. There is nothing *below* normal, so the central
+   operation — "ask for less" — has no expression.
+4. **The threading model doesn't transfer.** `bgrt` classifies a thread once at
+   start. GPU work is not owned by a thread; it is submitted to a queue owned by
+   a device context, and the submitting thread's class says nothing about how the
+   work executes. There is no thread to classify.
+5. **For AI workloads specifically, the real levers are a different kind of
+   thing.** Energy is saved by choosing the low-power compute unit (the Apple
+   Neural Engine via CoreML's `MLComputeUnits`, an NPU via DirectML, integrated
+   over discrete), by reducing batch size and concurrency, or by quantizing.
+   Those are model- and framework-level decisions. A thread-QoS crate is not
+   positioned to make any of them, and pretending otherwise would ship a knob
+   that looks like it saves energy without doing so.
+
+GPU energy obviously matters. The point is that today the lever is not a
+scheduling hint, so it does not belong in a scheduling-hint library.
+
+**What would change this.** Every objection above is contingent — four of the
+five describe what the platforms currently expose, not a principle. Concretely,
+reopen the question if any of these happen:
+
+- **An OS ships a per-thread or per-context GPU energy QoS** with the property
+  that makes the CPU design work: lowering it is unprivileged, it is set once,
+  and it means "use less power", not "go later in the queue". A Windows EcoQoS
+  for GPU contexts, or a Darwin QoS class that propagates to Metal submissions,
+  would be the shape to watch for.
+- **The graphics APIs converge on an eco tier that actually affects power** —
+  clocks, or placement onto lower-power units — rather than only arbitrating
+  contention. Vulkan's `VK_KHR_global_priority` is the nearest existing thing and
+  is explicitly *not* that; if a successor were, the calculus changes.
+- **Inference runtimes expose a portable low-power mode.** CoreML's
+  `MLComputeUnits`, DirectML device selection, and CUDA's knobs all express
+  something like "prefer the efficient unit", but with no common vocabulary. If a
+  cross-platform abstraction over compute-unit selection emerged, "run this model
+  quietly" would become expressible — though even then it may belong in an
+  inference wrapper rather than here.
+- **GPU work acquires a thread-like owner.** If a runtime lets a submission
+  inherit the classification of the thread that queued it, the existing model
+  would extend naturally instead of needing a parallel one.
+
+Until at least one of those is true, adding a GPU knob would mean shipping
+something that looks like an energy control and is not one. That is the actual
+objection, and it is the thing to re-test — not the conclusion.
+
 ## Findings worth remembering
 
 - **Linux on homogeneous CPUs: `nice(19)` is a null result without contention.**
@@ -224,6 +341,15 @@ frequency/power/residency, and Linux RAPL energy (often root since CVE-2020-8694
   Threadripper, `energy_uj` reflects the entire package (all cores + memory
   controller + I/O die). Per-thread power attribution is not possible: variance
   between executors (<3%) is measurement noise, not a real signal.
+- **`Background` already throttles disk I/O on macOS — and only on macOS.**
+  `QOS_CLASS_BACKGROUND` is not purely a CPU hint: Darwin also applies I/O
+  throttling to threads in that class. Linux `nice(19)` and Windows EcoQoS +
+  below-normal do not, beyond whatever indirect effect niceness has under an I/O
+  scheduler that derives best-effort priority from it (BFQ/CFQ do; `none` does
+  not). So the same file-heavy background task is quieter on macOS than on the
+  other two platforms, through a mechanism `bgrt` never asked for. This is an
+  asymmetry in current behaviour, not a bug, and it is why the I/O axis above
+  would *equalize* the platforms rather than add something new.
 - **macOS QoS promotion / priority inversion.** A higher-QoS thread that
   synchronously `join`s (or otherwise blocks on) a background thread *promotes it
   off the efficiency cores*. An async `await` on a background runtime does not.
