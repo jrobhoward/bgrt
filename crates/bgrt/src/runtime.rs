@@ -88,11 +88,13 @@ impl Default for RuntimeBuilder {
 
 impl RuntimeBuilder {
     /// Create a builder with default settings.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set the energy [`QosClass`] applied to every runtime thread.
+    #[must_use]
     pub fn qos(mut self, qos: QosClass) -> Self {
         self.qos = qos;
         self
@@ -100,6 +102,7 @@ impl RuntimeBuilder {
 
     /// Set the number of worker threads. Values below 1 are treated as 1.
     /// Ignored when [`current_thread`](RuntimeBuilder::current_thread) is set.
+    #[must_use]
     pub fn worker_threads(mut self, n: usize) -> Self {
         self.worker_threads = n;
         self
@@ -141,12 +144,14 @@ impl RuntimeBuilder {
     /// assert_eq!(answer, 42);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
+    #[must_use]
     pub fn current_thread(mut self, current_thread: bool) -> Self {
         self.current_thread = current_thread;
         self
     }
 
     /// Set the name prefix used for the runtime's threads.
+    #[must_use]
     pub fn thread_name(mut self, name: impl Into<String>) -> Self {
         self.thread_name = name.into();
         self
@@ -155,6 +160,7 @@ impl RuntimeBuilder {
     /// On Linux, also pin runtime threads to detected efficiency cores. No-op on
     /// macOS and Windows (the OS QoS/EcoQoS places work on efficient cores) and
     /// on homogeneous CPUs. Opt-in; off by default.
+    #[must_use]
     pub fn pin_efficiency_cores(mut self, pin: bool) -> Self {
         self.pin_efficiency_cores = pin;
         self
@@ -166,6 +172,7 @@ impl RuntimeBuilder {
     /// untouched. No-op on macOS/Windows (their QoS/EcoQoS throttle frequency
     /// directly), for other classes, and on kernels or governors without uclamp
     /// support. Opt-in; off by default.
+    #[must_use]
     pub fn clamp_frequency(mut self, clamp: bool) -> Self {
         self.clamp_frequency = clamp;
         self
@@ -405,6 +412,17 @@ impl Runtime {
     ///
     /// Note: the future runs on the **calling** thread, which is not classified;
     /// use [`spawn`](Runtime::spawn) for work that should run at this runtime's QoS.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `future` panics, or if called from within an asynchronous
+    /// execution context — including from inside a task on this runtime or any
+    /// other. This is Tokio's behaviour, passed through unchanged in both
+    /// scheduler modes (`Runtime::block_on` for the default multi-thread
+    /// scheduler, `Handle::block_on` in
+    /// [`current_thread`](RuntimeBuilder::current_thread) mode). To await from
+    /// inside async code, use `.await` on the [`spawn`](Runtime::spawn) handle
+    /// rather than nesting `block_on`.
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
         match &self.inner {
             Inner::MultiThread(rt) => rt.block_on(future),

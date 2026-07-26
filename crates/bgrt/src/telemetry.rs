@@ -231,12 +231,27 @@ fn current_freq_mhz(cpu: usize) -> Option<u32> {
     use windows_sys::Win32::System::Power::{
         CallNtPowerInformation, PROCESSOR_POWER_INFORMATION, ProcessorInformation,
     };
+    use windows_sys::Win32::System::Threading::{ALL_PROCESSOR_GROUPS, GetActiveProcessorCount};
 
-    let count = std::thread::available_parallelism().ok()?.get();
+    // The *system* processor count, deliberately not `available_parallelism()`:
+    // that reports the hardware threads available to this **process** (affinity
+    // masks, job-object limits), whereas `CallNtPowerInformation` fills one
+    // record per processor in the machine and answers anything shorter with
+    // STATUS_BUFFER_TOO_SMALL — which would silently report no frequency at all
+    // for the whole run, degrading the measurement the harness exists to take.
+    // SAFETY: takes a group number by value; the `ALL_PROCESSOR_GROUPS` sentinel
+    // asks for the machine-wide total.
+    let count = unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) } as usize;
+    // Documented to return 0 on failure, which is not a size we can allocate to.
+    if count == 0 {
+        return None;
+    }
     // SAFETY: `PROCESSOR_POWER_INFORMATION` is a plain struct of integers; zero
     // is a valid initial value.
     let mut buf: Vec<PROCESSOR_POWER_INFORMATION> = vec![unsafe { core::mem::zeroed() }; count];
-    let bytes = u32::try_from(count * size_of::<PROCESSOR_POWER_INFORMATION>()).ok()?;
+    let bytes = count
+        .checked_mul(size_of::<PROCESSOR_POWER_INFORMATION>())
+        .and_then(|n| u32::try_from(n).ok())?;
     // SAFETY: no input buffer; the output buffer is `bytes` long and writable.
     let status = unsafe {
         CallNtPowerInformation(
@@ -250,6 +265,11 @@ fn current_freq_mhz(cpu: usize) -> Option<u32> {
     if status != 0 {
         return None; // NTSTATUS: 0 == STATUS_SUCCESS
     }
+    // `cpu` comes from `GetCurrentProcessorNumber`, which is **group-relative**,
+    // while this buffer is indexed machine-wide. The two agree on single-group
+    // systems (≤ 64 logical processors) and alias above that — the same
+    // limitation `topology::efficiency_cores` documents, and acceptable for the
+    // same reason: hybrid consumer CPUs are single-group.
     buf.get(cpu).map(|p| p.CurrentMhz)
 }
 

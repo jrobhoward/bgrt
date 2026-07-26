@@ -52,17 +52,20 @@ impl Default for RayonBuilder {
 
 impl RayonBuilder {
     /// Create a builder with default settings.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set the energy [`QosClass`] applied to every pool thread.
+    #[must_use]
     pub fn qos(mut self, qos: QosClass) -> Self {
         self.qos = qos;
         self
     }
 
     /// Set the number of threads in the pool. Defaults to one per logical CPU.
+    #[must_use]
     pub fn num_threads(mut self, n: usize) -> Self {
         self.num_threads = Some(n);
         self
@@ -70,6 +73,7 @@ impl RayonBuilder {
 
     /// Set a name prefix for pool threads (e.g. `"bgrt-worker"` → threads are
     /// named `"bgrt-worker-0"`, `"bgrt-worker-1"`, …).
+    #[must_use]
     pub fn thread_name(mut self, name: impl Into<String>) -> Self {
         self.thread_name = Some(name.into());
         self
@@ -78,6 +82,7 @@ impl RayonBuilder {
     /// On Linux, also pin pool threads to detected efficiency cores. No-op on
     /// macOS and Windows (the OS QoS/EcoQoS places work on efficient cores) and
     /// on homogeneous CPUs. Opt-in; off by default.
+    #[must_use]
     pub fn pin_efficiency_cores(mut self, pin: bool) -> Self {
         self.pin_efficiency_cores = pin;
         self
@@ -89,6 +94,7 @@ impl RayonBuilder {
     /// untouched. No-op on macOS/Windows (their QoS/EcoQoS throttle frequency
     /// directly), for other classes, and on kernels or governors without uclamp
     /// support. Opt-in; off by default.
+    #[must_use]
     pub fn clamp_frequency(mut self, clamp: bool) -> Self {
         self.clamp_frequency = clamp;
         self

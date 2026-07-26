@@ -62,6 +62,25 @@
 //! # Ok(()) }
 //! # #[cfg(not(feature = "rayon"))] fn main() {}
 //! ```
+//!
+//! # Semver and wrapped dependencies
+//!
+//! `bgrt` **wraps** Tokio and rayon rather than hiding them, so their types are
+//! part of its public API by design: [`Runtime::spawn`] returns Tokio's
+//! `JoinHandle`, [`Runtime::handle`] hands back its `Handle`, and [`RayonPool`]
+//! derefs to `rayon::ThreadPool`. Passing those through is the point — a wrapper
+//! that hid them would force you to give up the ecosystem built on them.
+//!
+//! The consequence is that **a major release of Tokio or rayon is a major
+//! release of `bgrt`**, and the two majors cannot be mixed: a
+//! `&tokio_1::runtime::Handle` is a different type from its 2.x counterpart. To
+//! name the exact versions `bgrt` resolved without declaring them yourself, use
+//! the re-exports [`tokio`] and [`rayon`].
+//!
+//! Two things sit outside this. The [`telemetry`] module is exempt from semver
+//! altogether (see its docs). And [`Error`] deliberately boxes rayon's build
+//! error, so the enum's shape survives rayon reshaping its own error type —
+//! that is about *this* enum staying stable, not about hiding the dependency.
 #![warn(missing_docs)]
 
 mod backend;
@@ -87,6 +106,18 @@ pub use rayon_pool::{RayonBuilder, RayonPool};
 #[cfg(feature = "tokio")]
 pub use runtime::{Runtime, RuntimeBuilder};
 pub use thread::{ThreadBuilder, spawn_thread};
+
+/// The Tokio version `bgrt` wraps, re-exported so callers can name its types
+/// (`JoinHandle`, `Handle`, …) without risking a mismatched second copy in the
+/// dependency graph. See *Semver and wrapped dependencies*.
+#[cfg(feature = "tokio")]
+pub use tokio;
+
+/// The rayon version `bgrt` wraps, re-exported so callers can name its types
+/// without risking a mismatched second copy in the dependency graph. See *Semver
+/// and wrapped dependencies*.
+#[cfg(feature = "rayon")]
+pub use rayon;
 
 /// Apply an energy [`QosClass`] to the **current** thread.
 ///

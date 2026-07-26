@@ -95,23 +95,27 @@ impl Default for ThreadBuilder {
 
 impl ThreadBuilder {
     /// Create a builder with default settings.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set the energy [`QosClass`] applied to the spawned thread.
+    #[must_use]
     pub fn qos(mut self, qos: QosClass) -> Self {
         self.qos = qos;
         self
     }
 
     /// Set the thread's name.
+    #[must_use]
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
     }
 
     /// Set the thread's stack size, in bytes.
+    #[must_use]
     pub fn stack_size(mut self, bytes: usize) -> Self {
         self.stack_size = Some(bytes);
         self
@@ -119,6 +123,7 @@ impl ThreadBuilder {
 
     /// On Linux, also pin the spawned thread to detected efficiency cores. No-op
     /// on macOS/Windows and on homogeneous CPUs. Opt-in; off by default.
+    #[must_use]
     pub fn pin_efficiency_cores(mut self, pin: bool) -> Self {
         self.pin_efficiency_cores = pin;
         self
@@ -130,6 +135,7 @@ impl ThreadBuilder {
     /// leaves frequency untouched. No-op on macOS/Windows (their QoS/EcoQoS
     /// throttle frequency directly), for other classes, and on kernels or
     /// governors without uclamp support. Opt-in; off by default.
+    #[must_use]
     pub fn clamp_frequency(mut self, clamp: bool) -> Self {
         self.clamp_frequency = clamp;
         self

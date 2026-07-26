@@ -8,6 +8,55 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Semver policy for wrapped dependencies, stated — 2026-07-25
+- **`Error::ThreadPool`'s doc claimed the boxing kept rayon out of `bgrt`'s
+  public API. It never did.** `RayonPool` derefs to `rayon::ThreadPool`, and
+  `Runtime::spawn`/`handle` return Tokio's `JoinHandle`/`Handle` — a wrapper
+  crate cannot hide the thing it wraps without taking the ecosystem with it. The
+  comment now states the boxing's real purpose (keeping *this enum's* shape
+  stable when rayon reshapes its error type) and points at the policy.
+- **New crate-level *Semver and wrapped dependencies* section**, in the same
+  spirit as the existing `telemetry` exemption: a major release of Tokio or rayon
+  is a major release of `bgrt`, and the majors cannot be mixed.
+- **`pub use tokio;` / `pub use rayon;`** (each behind its own feature) so callers
+  can name the exact versions `bgrt` resolved instead of declaring a dependency
+  that might resolve differently. Two compile-level tests assert each re-export
+  denotes the same type the API hands back — a mismatch is precisely the bug the
+  re-export exists to prevent.
+
+### Windows telemetry sized its buffer from the wrong processor count — 2026-07-25
+- **Fixed: `available_parallelism()` reports threads available to the
+  *process*** (affinity masks, job-object limits), while
+  `CallNtPowerInformation(ProcessorInformation)` fills one record per processor
+  in the *machine* and rejects anything shorter with `STATUS_BUFFER_TOO_SMALL`.
+  Any process under a restricted affinity mask therefore reported no frequency at
+  all — silently degrading the measurement the harness exists to take. Now uses
+  `GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)`, with the buffer-size multiply
+  made checked.
+- The group-relative index caveat (`GetCurrentProcessorNumber` vs. a machine-wide
+  buffer) is now documented here too, pointing at the matching note in
+  `topology::efficiency_cores`. Unchanged behaviour; it was simply undocumented.
+- Unverified on Windows hardware, like the rest of the Windows backend.
+
+### `#[must_use]` on the builder methods — 2026-07-25
+- `RuntimeBuilder::new().qos(QosClass::Background);` compiled, did nothing, and
+  warned about nothing. All 19 chainable methods across the three builders (16
+  setters + 3 `new()`) are now `#[must_use]`. `build()` needs no attribute — it
+  returns `Result`, which already carries one.
+- **A `const fn` pass was considered and rejected**, having looked at the actual
+  candidates: none are reachable from a const context (`new()` goes through
+  `Default::default()`, and no `Runtime`/`RayonPool`/`Aggregate` can be
+  const-constructed), so it buys nothing, while `const` on a public fn is a
+  forward-compatibility promise that a later `tracing` call or non-const
+  validation would break. Several candidates are also `cfg`-gated no-op twins,
+  where accepting the lint would make the API `const` on one platform and not
+  another.
+
+### `Runtime::block_on` documents its panics — 2026-07-25
+- Both scheduler modes pass Tokio's panic-on-nested-`block_on` through unchanged;
+  a `#![warn(missing_docs)]` crate that documents `spawn_thread`'s panic should
+  document this one too.
+
 ### Linux `Default` no longer fails in an already-niced process — 2026-07-25
 - **Fixed: `apply(QosClass::Default)` returned an error whenever the calling
   thread's nice value was already above 0.** `setpriority` is refused with

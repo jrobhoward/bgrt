@@ -43,9 +43,14 @@ pub enum Error {
     /// A rayon thread pool could not be built.
     ///
     /// The cause is boxed rather than typed as `rayon::ThreadPoolBuildError` so
-    /// that rayon's version does not become part of `bgrt`'s public API — a
-    /// rayon major release would otherwise be a breaking change here. Downcast
-    /// the source if you need the concrete type.
+    /// that this enum does not change shape when rayon reshapes its error type.
+    /// Downcast the source if you need the concrete type.
+    ///
+    /// Note this does **not** keep rayon out of `bgrt`'s public API, and is not
+    /// meant to: [`RayonPool`](crate::RayonPool) derefs to `rayon::ThreadPool`,
+    /// just as [`Runtime`](crate::Runtime) hands back Tokio's `JoinHandle` and
+    /// `Handle`. Wrapping those runtimes is the point of the crate. See the
+    /// crate-level *Semver and wrapped dependencies* section.
     #[cfg(feature = "rayon")]
     #[error("failed to build thread pool")]
     ThreadPool(#[source] Box<dyn std::error::Error + Send + Sync>),
