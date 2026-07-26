@@ -2,12 +2,18 @@
 //!
 //! Each platform module exposes `apply(QosClass) -> Result<(), Error>` acting on
 //! the calling thread: macOS via `pthread_set_qos_class_self_np`, Linux via
-//! `setpriority`, Windows via EcoQoS (`SetThreadInformation`) + `SetThreadPriority`.
-//! Any other platform gets a no-op so the API is callable everywhere.
+//! `setpriority` + `ioprio_set`, Windows via EcoQoS (`SetThreadInformation`) +
+//! `SetThreadPriority`. Any other platform gets a no-op so the API is callable
+//! everywhere.
+//!
+//! A [`QosClass`] covers CPU *and* block I/O. macOS bundles the two in one call;
+//! Linux needs a second syscall (see [`ioprio`]); Windows covers CPU only for
+//! now — `docs/DESIGN.md` records why.
 
 use crate::error::Error;
 use crate::qos::QosClass;
 
+mod ioprio;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]

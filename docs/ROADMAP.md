@@ -158,6 +158,7 @@ Dev: `rstest`, `tempfile`. Release profile: `strip`, `lto`, `codegen-units = 1`.
 | 5 | Comparison harness (`bgrt-bench`)           | ✅ Done (table/JSON + verdict + integration test; macOS run, Linux/Windows cross-check) |
 | 6 | Docs, examples, polish                      | ✅ Done (examples run/lint clean; README incl. M1 results; CLAUDE.md refreshed) |
 | 7 | Road to 1.0 (CI, licensing, API freeze)     | ✅ Done — CI matrix, licenses/packaging, error causes, shutdown control, `current_thread`, Windows E/P telemetry. **Only hardware-blocked item left: running `--pin` on a real P+E Linux box, now documented as unmeasured rather than implied.** |
+| 8 | Block-I/O priority (`QosClass` covers disk) | 🔶 In progress — macOS free via QoS, **Linux shipped** (`backend/ioprio.rs`); **8b: Windows deferred**, needs `THREAD_MODE_BACKGROUND_BEGIN` measured on real hardware against the never-starve rule |
 
 Legend: ⬜ not started · 🔶 in progress · ✅ done. Update this table **and**
 `CHANGELOG.md` as each phase lands.
@@ -292,12 +293,11 @@ Phase 7): Windows E/P classification, and CI to execute the Linux/Windows paths.
 - ~~**No current-thread runtime**~~ — ✅ Resolved (Phase 7) as
   `RuntimeBuilder::current_thread(bool)`, with `bgrt` owning the driver thread.
 - **What about I/O and GPU scheduling?** — Answered as a scope decision (see
-  `docs/DESIGN.md` → *Scope: CPU now, I/O maybe, GPU probably never*), but left
-  open rather than struck through, because both answers are contingent. **I/O**
-  is a real second axis with an unprivileged per-thread mechanism on all three
-  OSes; deferred to a possible **1.1, gated on demand**, and would fold into
-  `QosClass` rather than becoming a fourth builder knob. **GPU is probably
-  never** — no OS-level per-thread GPU QoS exists anywhere today, the per-API
+  `docs/DESIGN.md` → *Scope: CPU and I/O now, GPU probably never*). **I/O is now
+  in scope and shipped for macOS and Linux** — folded into `QosClass` rather than
+  added as a fourth builder knob, because Windows and macOS bundle the axes and a
+  split API could not be honoured on either. Windows I/O remains open (Phase 8b).
+  **GPU is probably never** — no OS-level per-thread GPU QoS exists anywhere today, the per-API
   priorities that do exist arbitrate contention rather than save energy, D3D12
   has no tier below normal, and GPU work is owned by a queue rather than by a
   classifiable thread. Those are statements about the current platforms, not a

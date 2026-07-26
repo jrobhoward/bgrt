@@ -44,6 +44,28 @@ pub fn current_uclamp_max() -> Option<u32> {
         .and_then(|v| v.trim().parse().ok())
 }
 
+/// Read the calling thread's raw block-I/O priority word (Linux).
+///
+/// `ioprio_get` reports whatever was *set*, independent of whether the active
+/// I/O scheduler honours it, so assertions on this are deterministic even on a
+/// runner using the `none` scheduler.
+#[cfg(target_os = "linux")]
+pub fn current_ioprio() -> i32 {
+    const IOPRIO_WHO_PROCESS: i32 = 1;
+    // SAFETY: reads the calling thread's I/O priority (`who` = process, pid 0).
+    let rc = unsafe { libc::syscall(libc::SYS_ioprio_get, IOPRIO_WHO_PROCESS, 0) };
+    assert!(rc >= 0, "ioprio_get failed: {rc}");
+    rc as i32
+}
+
+/// Split a raw I/O priority word into `(class, level)`.
+#[cfg(target_os = "linux")]
+pub fn ioprio_parts(prio: i32) -> (i32, i32) {
+    const IOPRIO_CLASS_SHIFT: i32 = 13;
+    const IOPRIO_PRIO_MASK: i32 = (1 << IOPRIO_CLASS_SHIFT) - 1;
+    (prio >> IOPRIO_CLASS_SHIFT, prio & IOPRIO_PRIO_MASK)
+}
+
 /// Read the calling thread's nice value, -20..=19 (Linux).
 #[cfg(target_os = "linux")]
 pub fn current_nice() -> i32 {

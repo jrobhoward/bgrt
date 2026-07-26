@@ -7,6 +7,11 @@
 //! [`QosClass::Background`] → `nice(19)`, [`QosClass::Utility`] → `nice(10)`,
 //! [`QosClass::Default`] → `nice(0)`.
 //!
+//! Then lowers **block-I/O priority** to match, via
+//! [`ioprio`](super::ioprio) — a `QosClass` governs disk demands as well as CPU,
+//! which macOS gets in a single call and Linux needs a second syscall for. Same
+//! anti-starvation reasoning: best-effort, never `IOPRIO_CLASS_IDLE`.
+//!
 //! Raising niceness (lowering priority) is always unprivileged. Efficiency-core
 //! affinity is handled separately and opt-in (see the runtime builder), not here.
 
@@ -26,14 +31,15 @@ pub(super) fn apply(class: QosClass) -> Result<(), Error> {
     // SAFETY: `setpriority` with `who == 0` targets the calling thread and takes
     // an in-range nice value; it has no other preconditions.
     let rc = unsafe { libc::setpriority(libc::PRIO_PROCESS as _, 0, nice) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(Error::Backend {
+    if rc != 0 {
+        return Err(Error::Backend {
             syscall: "setpriority",
             source: std::io::Error::last_os_error(),
-        })
+        });
     }
+    // The disk half of the class. Best-effort internally, so this only surfaces
+    // an error the caller could not have caused.
+    super::ioprio::apply(class)
 }
 
 #[cfg(test)]

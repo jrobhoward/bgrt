@@ -5,8 +5,9 @@
 //!
 //! The mechanism is a per-thread energy [`QosClass`] applied once when a thread
 //! starts. It maps to the native low-energy facility on each OS — macOS QoS
-//! classes, Windows EcoQoS, Linux `nice` — and runs as a regular (non-admin)
-//! user.
+//! classes, Windows EcoQoS, Linux `nice` + `ioprio` — and runs as a regular
+//! (non-admin) user. A class covers **CPU and block I/O**; see [`QosClass`] for
+//! what each platform actually delivers.
 //!
 //! # What's available
 //!

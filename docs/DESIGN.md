@@ -31,15 +31,15 @@ it onto a quiet executor.
 - Dynamic per-*task* re-classification. Classification is per-thread, set once.
 - Being a general tokio replacement — `bgrt` *configures* a tokio runtime.
 - **GPU work of any kind** — see
-  [Scope](#scope-cpu-now-io-maybe-gpu-probably-never). Not on the roadmap and
+  [Scope](#scope-cpu-and-io-now-gpu-probably-never). Not on the roadmap and
   unlikely ever to be, but the objections are about the current state of the
   platforms rather than about principle, so they are written as conditions that
   could change.
 
-`bgrt` is a **CPU** scheduling-hint library. I/O priority is a plausible second
-axis, deferred to a possible 1.1; GPU is out of scope for the foreseeable future.
-The reasoning for both is below, because "why don't you do X" is a question worth
-answering once in writing.
+`bgrt` is a **CPU and block-I/O** scheduling-hint library — one `QosClass`
+governs both. GPU is out of scope for the foreseeable future. The reasoning for
+both is below, because "why don't you do X" is a question worth answering once in
+writing.
 
 ## The mechanism
 
@@ -200,51 +200,90 @@ The **library never needs privileges** — it only lowers its own threads. Only 
 *measurement harness* may need elevation: macOS `powermetrics` (sudo) for
 frequency/power/residency, and Linux RAPL energy (often root since CVE-2020-8694).
 
-## Scope: CPU now, I/O maybe, GPU probably never
+## Scope: CPU and I/O now, GPU probably never
 
-`bgrt` classifies **CPU** work. The two obvious "what about…" questions have
-different answers, recorded here so they don't get re-litigated — and, for the
-GPU one, so that the conditions under which the answer *should* be revisited are
-written down rather than left to memory.
+`bgrt` classifies **CPU and block-I/O** work. The two obvious "what about…"
+questions ended with different answers, recorded here so they don't get
+re-litigated — and, for the GPU one, so that the conditions under which the
+answer *should* be revisited are written down rather than left to memory.
 
-### I/O priority — deferred to a possible 1.1, demand-gated
+### I/O priority — in scope; a class covers disk as well as CPU
 
-I/O is a genuine second axis and a natural fit: every target OS exposes an
-unprivileged, per-thread, set-once-at-thread-start I/O priority, which is exactly
-the shape of the existing CPU knob and would drop into `backend/*.rs` and
-`thread::classify` without new architecture.
+A `QosClass` governs a thread's *resource* demands, not only its CPU demands.
+This was very nearly deferred to 1.1 as demand-gated, and two findings changed
+the decision.
 
-| | Mechanism | Unprivileged to lower |
+**Finding 1: two of three platforms already did it.** The feature was mostly
+already present, through mechanisms the crate was using for other reasons:
+
+| | I/O priority | via |
 |---|---|---|
-| macOS | `setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD, IOPOL_THROTTLE)` | yes |
-| Linux | `ioprio_set(IOPRIO_WHO_PROCESS, 0, IOPRIO_CLASS_IDLE)` (pid 0 = calling thread) | yes, since 2.6.25 for `IDLE` |
-| Windows | `SetThreadPriority(THREAD_MODE_BACKGROUND_BEGIN)` — lowers CPU, I/O *and* memory priority together | yes, calling thread only |
+| macOS | already throttled | `QOS_CLASS_BACKGROUND` implies disk-I/O throttling — one call, both axes |
+| Linux | probably already correct | with no explicit I/O priority the kernel derives a best-effort level from niceness, `(nice + 20) / 5` → `nice(19)` = level 7, `nice(10)` = level 6 |
+| Windows | **not covered** | EcoQoS and thread priority don't touch I/O priority |
 
-It is **not** in 1.0 because nobody has asked for it, and because two of the
-three platforms come with caveats that need measuring before the feature could
-honestly be advertised:
+That derivation lands on exactly the mapping we would have chosen by hand, which
+made "add I/O priority" one platform's gap plus a documentation commitment rather
+than a three-platform feature.
 
-- **Linux would be another documented null result on common hardware.**
-  `ioprio` only bites with an I/O scheduler that honours it: BFQ does fully,
-  `mq-deadline` gained support in 5.18, and **`none` — a common default for NVMe
-  — ignores it entirely.** On a modern NVMe machine the call would succeed and do
-  nothing, structurally identical to the `nice`-on-a-homogeneous-CPU result
-  already documented below. That is shippable, but only with the same honest
-  caveat treatment.
-- **Windows' mechanism is coarser than the current CPU mapping.**
-  `THREAD_MODE_BACKGROUND_BEGIN` is a begin/end pair that lowers CPU *and* memory
-  priority alongside I/O, so adopting it would change the existing `Background`
-  CPU behaviour, not just add an axis — which bears on the never-starve
-  requirement. How it composes with the `THREAD_POWER_THROTTLING_EXECUTION_SPEED`
-  call already made in `backend/windows.rs` is unverified.
-- **macOS needs nothing.** `QOS_CLASS_BACKGROUND` already implies disk-I/O
-  throttling; see the findings below, where this is recorded as a current
-  cross-platform asymmetry rather than a future feature.
+**Finding 2: it is a semantic change, so deferring it is the risky option.** If
+1.0 had shipped saying "`QosClass` is a CPU knob" and 1.1 then said "it also
+governs I/O", that would be a silent behaviour change for existing users —
+technically not a semver break, which makes it worse rather than better.
+Committing the meaning up front costs nothing (it already described macOS and
+probably Linux) and turns the eventual Windows change into a move *toward*
+documented behaviour.
 
-If it lands, the design call is to **fold it into `QosClass`** rather than add a
-fourth builder knob: `Background` would mean "quiet CPU *and* quiet I/O", which
-is what macOS already does, so folding makes the platforms consistent instead of
-adding an axis users must learn.
+So Linux now sets I/O priority explicitly (`backend/ioprio.rs`), and Windows is
+documented as the outstanding gap.
+
+**Best-effort, never `IOPRIO_CLASS_IDLE`.** Idle-class I/O only gets the disk
+when nothing else wants it — the I/O equivalent of `SCHED_IDLE`, which this
+project rejects for CPU because quiet work must still crawl forward. Best-effort
+level 7 is the weighted-fair choice, exactly parallel to `nice(19)`.
+
+**Explicit, even though `nice` probably implies it.** One syscall buys
+independence from a kernel-internal derivation, intent visible in `strace`, and a
+value directly assertable via `ioprio_get` in tests — this project's convention
+is to measure rather than assume, and the implicit version cannot be asserted.
+
+**Inert on some configurations, like `uclamp`.** Whether the priority is honoured
+is the I/O scheduler's business: BFQ fully, `mq-deadline` since 5.18, `none` — a
+common NVMe default — not at all. Documented rather than hidden.
+
+**Windows deferred deliberately.** `SetThreadPriority(THREAD_MODE_BACKGROUND_BEGIN)`
+is the documented mechanism, but it also lowers CPU and memory priority in the
+same call, so adopting it changes shipped `Background` CPU behaviour rather than
+just adding an axis. Three questions need answering on real Windows hardware
+first: whether it composes with the existing `THREAD_POWER_THROTTLING_EXECUTION_SPEED`
+call or overrides it; whether background mode is still weighted-fair (never-starve
+is a hard requirement here); and whether the begin/end pairing matters when only
+`BEGIN` is ever called, at thread start.
+
+#### Why one knob and not two
+
+`qos()` covers both axes; there is no separate `io_class()`. The reasons, in
+order of weight:
+
+1. **Two knobs cannot be honoured on two of three platforms.** Windows has no
+   documented thread-scope I/O-priority API — the only documented path bundles
+   CPU, I/O, and memory. (`NtSetInformationThread(ThreadIoPriority)` is
+   undocumented, so out of bounds for this crate.) macOS bundles them too. So
+   `qos(Background).io(Default)` and its inverse would be Linux-only truths. **An
+   API that cannot honour its own combinations is worse than a coarser one that
+   always does what it says.**
+2. **macOS already behaved this way**, so the bundled semantics are documentation
+   catching up with shipped behaviour rather than a new invention. Had macOS
+   treated the axes independently, a split API would have been defensible; because
+   it bundles them, a split API would have been contradicted by the reference
+   platform on day one.
+3. **It keeps the builder trio intact** — no fourth knob across `RuntimeBuilder`,
+   `RayonBuilder`, and `ThreadBuilder`.
+4. **The escape hatch stays additive.** If split control is ever genuinely needed,
+   `io_class(Option<QosClass>)` can be added as an *override* documented "no
+   effect on Windows" — exactly the mould of `pin_efficiency_cores` and
+   `clamp_frequency`, both already platform-specific opt-ins. Nothing here
+   forecloses it.
 
 ### GPU — probably never, but here's what would change that
 
@@ -341,15 +380,15 @@ objection, and it is the thing to re-test — not the conclusion.
   Threadripper, `energy_uj` reflects the entire package (all cores + memory
   controller + I/O die). Per-thread power attribution is not possible: variance
   between executors (<3%) is measurement noise, not a real signal.
-- **`Background` already throttles disk I/O on macOS — and only on macOS.**
-  `QOS_CLASS_BACKGROUND` is not purely a CPU hint: Darwin also applies I/O
-  throttling to threads in that class. Linux `nice(19)` and Windows EcoQoS +
-  below-normal do not, beyond whatever indirect effect niceness has under an I/O
-  scheduler that derives best-effort priority from it (BFQ/CFQ do; `none` does
-  not). So the same file-heavy background task is quieter on macOS than on the
-  other two platforms, through a mechanism `bgrt` never asked for. This is an
-  asymmetry in current behaviour, not a bug, and it is why the I/O axis above
-  would *equalize* the platforms rather than add something new.
+- **`Background` throttles disk I/O on macOS for free — which is what set the
+  I/O design.** `QOS_CLASS_BACKGROUND` is not purely a CPU hint: Darwin applies
+  I/O throttling to threads in that class, in the same call. Discovering that is
+  what turned "should I/O be a second knob?" into "it already isn't one on the
+  reference platform". Linux now matches explicitly via `ioprio_set`; Windows is
+  the remaining gap. Before that work, the same file-heavy background task was
+  measurably quieter on macOS than elsewhere through a mechanism `bgrt` never
+  asked for — an undocumented asymmetry, now closed on two of three platforms and
+  documented on the third.
 - **macOS QoS promotion / priority inversion.** A higher-QoS thread that
   synchronously `join`s (or otherwise blocks on) a background thread *promotes it
   off the efficiency cores*. An async `await` on a background runtime does not.

@@ -8,7 +8,11 @@ it onto a quiet executor.
 
 - **Per-thread energy QoS** — classify work as `Background`, `Utility`, or
   `Default`, mapped to each OS's native facility: macOS QoS classes, Windows
-  EcoQoS, Linux `nice` (+ opt-in efficiency-core affinity and `uclamp` frequency cap).
+  EcoQoS, Linux `nice` + `ioprio` (+ opt-in efficiency-core affinity and `uclamp`
+  frequency cap).
+- **CPU *and* disk** — one class covers both. Quiet work doesn't thrash the disk
+  either (macOS and Linux today; [Windows I/O is not yet
+  covered](#io-priority-is-not-yet-covered-on-windows)).
 - **No admin required** — the library only ever *lowers* its own threads' demands.
 - **Wraps tokio, integrates with rayon** — an energy-classified async runtime,
   a quiet rayon thread pool for parallel iterators, and a quiet OS-thread spawner
@@ -82,9 +86,16 @@ Runnable examples (`cargo run --example <name> -p bgrt`):
 
 | Class | macOS | Windows | Linux |
 |---|---|---|---|
-| `Background` | `QOS_CLASS_BACKGROUND` (efficiency cores) | EcoQoS + below-normal | `nice(19)` + opt-in E-core affinity + opt-in `uclamp` frequency cap |
-| `Utility` | `QOS_CLASS_UTILITY` | EcoQoS + normal | `nice(10)` |
-| `Default` | none | none | `nice(0)` |
+| `Background` | `QOS_CLASS_BACKGROUND` (efficiency cores, throttled I/O) | EcoQoS + below-normal | `nice(19)` + I/O best-effort 7 + opt-in E-core affinity + opt-in `uclamp` frequency cap |
+| `Utility` | `QOS_CLASS_UTILITY` | EcoQoS + normal | `nice(10)` + I/O best-effort 6 |
+| `Default` | none | none | `nice(0)`, I/O untouched |
+
+A class governs **CPU and block I/O together**, not CPU alone — one knob, because
+two of three platforms bundle the axes and an API offering combinations it can't
+honour would be worse than a coarser one that always means what it says. The
+`Background` I/O mapping is weighted-fair (Linux best-effort 7, deliberately
+*not* `IOPRIO_CLASS_IDLE`), for the same anti-starvation reason `nice(19)` is
+used over `SCHED_IDLE`.
 
 ## Benchmarking (`bgrt-bench`)
 
@@ -316,14 +327,33 @@ that is EcoQoS's job, not ours.
 - **macOS join-promotion:** synchronously waiting on a background thread from a
   higher-QoS thread can promote it off the efficiency cores (see the benchmarking
   note above). Async `await` on a background runtime does not.
-- **`bgrt` classifies CPU work only.** It does not deprioritize disk I/O, and it
-  is very unlikely to ever touch GPU work — see
+### I/O priority is not yet covered on Windows
+
+A `QosClass` covers CPU *and* block I/O, but only two platforms deliver both
+today:
+
+| | CPU | Block I/O | via |
+|---|---|---|---|
+| macOS | ✅ | ✅ | `QOS_CLASS_BACKGROUND` implies disk-I/O throttling — one call, both axes |
+| Linux | ✅ | ✅ | `setpriority` + an explicit `ioprio_set` to best-effort 7 / 6 |
+| Windows | ✅ | ❌ | EcoQoS and thread priority don't touch I/O priority |
+
+The Windows mechanism that *would* cover it,
+`SetThreadPriority(THREAD_MODE_BACKGROUND_BEGIN)`, also lowers CPU and memory
+priority in the same call. Adopting it would change shipped `Background` CPU
+behaviour rather than just adding an axis, and it has to be measured against this
+crate's never-starve requirement first — on real Windows hardware, which the
+author doesn't have. Deliberately deferred rather than guessed at.
+
+**On Linux, whether the priority bites depends on your I/O scheduler.** BFQ
+honours it fully; `mq-deadline` since kernel 5.18; `none` — a common default for
+NVMe — ignores it entirely, making the call a no-op. Same shape of caveat as
+`uclamp` needing `schedutil`. Check with
+`cat /sys/block/<dev>/queue/scheduler`.
+
+- **`bgrt` classifies CPU and disk work, not GPU work** — and GPU is very
+  unlikely to ever be in scope; see
   [Scope: what `bgrt` is not](#scope-what-bgrt-is-not) below.
-- **On macOS, `Background` also throttles disk I/O** — not because `bgrt` asks
-  for it, but because `QOS_CLASS_BACKGROUND` implies it on Darwin. Linux and
-  Windows do not do this, so a file-heavy background task is quieter on macOS
-  than on the other two platforms. Worth knowing before you compare I/O-bound
-  numbers across machines.
 - **Telemetry availability varies** (see the table above): Linux is fullest
   unprivileged; macOS frequency/power/residency need `sudo powermetrics`; Windows
   reports frequency, CPU index, and E/P classification, but has no energy
@@ -332,14 +362,12 @@ that is EcoQoS's job, not ours.
 
 ## Scope: what `bgrt` is not
 
-**I/O priority — maybe in 1.1, if there's demand.** Every target OS exposes an
-unprivileged per-thread I/O priority (`setiopolicy_np`, `ioprio_set`,
-`THREAD_MODE_BACKGROUND_BEGIN`), and it's the same shape as the CPU knob, so it
-would fit without new architecture. It's not in 1.0 because nobody has asked, and
-because on Linux it does nothing under the `none` I/O scheduler that's a common
-NVMe default — the same kind of null result as `nice` on a homogeneous CPU. If
-you want it, open an issue; that's the demand signal. Design notes are in
-[`docs/DESIGN.md`](docs/DESIGN.md#scope-cpu-now-io-maybe-gpu-probably-never).
+**I/O priority — in scope, and shipped for macOS and Linux.** A `QosClass`
+governs disk demands as well as CPU. Windows is the remaining gap; see the
+limitation above. Split CPU/I/O control (asking for quiet CPU but normal I/O, or
+the reverse) is *not* offered, because two of three platforms can't express it —
+reasoning in
+[`docs/DESIGN.md`](docs/DESIGN.md#scope-cpu-and-io-now-gpu-probably-never).
 
 **GPU — probably never.** Not on the roadmap, and it would take a shift in the
 platforms to get there. As things stand today:

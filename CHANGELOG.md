@@ -8,7 +8,59 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### A `QosClass` now covers block I/O, not just CPU — 2026-07-25
+- **`QosClass` is a *resource* class.** Linux gained `backend/ioprio.rs`:
+  `ioprio_set` to best-effort level **7** for `Background`, **6** for `Utility`,
+  and untouched for `Default`. macOS already did this for free
+  (`QOS_CLASS_BACKGROUND` implies disk-I/O throttling). Supersedes the
+  "deferred to a possible 1.1" decision recorded below, for two reasons found
+  while designing it.
+  - **The feature was already ~2/3 present.** macOS bundles I/O into the QoS
+    class, and on Linux the kernel derives a best-effort level from niceness —
+    `(nice + 20) / 5`, mapping `nice(19)`/`nice(10)` onto exactly levels 7 and 6,
+    the same values we would have picked by hand. So this was one platform's gap
+    plus a documentation commitment, not a three-platform feature.
+  - **Deferring was the riskier option.** This is a *semantic* change, not an
+    additive one. Shipping 1.0 as "`QosClass` is a CPU knob" and then redefining
+    it in 1.1 would be a silent behaviour change — technically not a semver
+    break, which makes it worse, not better.
+- **Best-effort, never `IOPRIO_CLASS_IDLE`.** Idle-class I/O only gets the disk
+  when nothing else wants it — the I/O equivalent of `SCHED_IDLE`, which this
+  project rejects for CPU. Best-effort 7 is the weighted-fair choice, exactly
+  parallel to `nice(19)`, and preserves the never-starve guarantee on the disk
+  axis too.
+- **`Default` deliberately sets nothing.** An unset I/O priority already tracks
+  the thread's niceness, which `Default` has just set to 0; writing a value would
+  be the one place this backend *raised* a priority instead of lowering it.
+- **One knob, not two — and macOS is why.** There is no `io_class()` to go with
+  `qos()`. Windows has no documented thread-scope I/O-priority API (only
+  `THREAD_MODE_BACKGROUND_BEGIN`, which bundles CPU + I/O + memory), and macOS
+  bundles them as well, so `qos(Background).io(Default)` and its inverse would be
+  Linux-only truths. An API that cannot honour its own combinations is worse than
+  a coarser one that always means what it says. A split `io_class` override stays
+  available later as a purely additive, platform-gated knob in the mould of
+  `pin_efficiency_cores`.
+- **Windows I/O is the outstanding gap, deferred on purpose.** Adopting
+  `THREAD_MODE_BACKGROUND_BEGIN` would change shipped `Background` *CPU*
+  behaviour rather than just adding an axis, and needs measuring on real hardware
+  against the never-starve rule first. Documented as not-covered rather than
+  quietly assumed. Tracked as Phase 8b.
+- **Tests:** 5 portable ones for the mapping and the `IOPRIO_PRIO_VALUE`
+  bit-packing (they run on every platform, since the decision is pure), plus 4
+  Linux-only ones that read the value back with `ioprio_get` — which reports what
+  was *set* regardless of whether the active I/O scheduler honours it, so the
+  assertions are deterministic even on a `none`-scheduler CI runner.
+- **Honest caveat:** whether the priority *bites* is the I/O scheduler's
+  business. BFQ honours it fully, `mq-deadline` since 5.18, and `none` — a common
+  NVMe default — ignores it entirely. Same shape of "inert on some
+  configurations" as the `uclamp` frequency clamp, and documented the same way.
+- **Open, unverified:** the `(nice + 20) / 5` derivation itself is from
+  documentation, not measured here. It does not affect correctness — the explicit
+  `ioprio_set` makes the result the same either way — only whether this change is
+  a no-op or a real behaviour change on Linux.
+
 ### Scope decision: I/O deferred, GPU probably never — 2026-07-25
+*(The I/O half was superseded the same day — see above. The GPU half stands.)*
 - **`bgrt` is a CPU scheduling-hint library, and now says so.** Recorded in
   `docs/DESIGN.md` (*Scope: CPU now, I/O maybe, GPU probably never*), the README
   (*Scope: what `bgrt` is not*), the non-goals list, and the roadmap's open
