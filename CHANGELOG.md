@@ -8,6 +8,31 @@ the project is pre-1.0 and not yet released.
 
 ## [Unreleased]
 
+### Windows memory-priority restore assumed a normal baseline — 2026-07-25
+- **Fixed: `apply(Background)` wrote `MEMORY_PRIORITY_NORMAL` unconditionally
+  after leaving background mode**, on the assumption that normal is where every
+  thread starts. It is the system *default*, but a process can lower its own with
+  `SetProcessInformation(ProcessMemoryPriority)` and new threads inherit that. On
+  such a process `bgrt` would have *raised* a `Background` thread's memory
+  priority above the policy its process chose — the one thing a classifier that
+  only ever lowers must not do. `apply` now samples the thread's memory priority
+  before entering the mode and puts that value back; the read is a new
+  `memory_priority()` helper shared with the tests.
+- **Found by CI, not by reasoning.** GitHub Actions `windows-latest` runners start
+  threads at `MEMORY_PRIORITY_LOW` (2), which tripped the
+  `assert_eq!(before, MEMORY_PRIORITY_NORMAL, "unexpected starting state")` guard
+  in `set_background_mode____entered____lowers_memory_priority_below_normal`. The
+  guard was doing its job: the surprising starting state was real, and the
+  production code was the thing that was wrong.
+- **Tests now assert against the observed baseline** rather than the constant —
+  `..._lowers_memory_priority` (renamed, no longer "below_normal") checks the
+  value dropped from wherever it started, with the already-at-`VERY_LOW` floor
+  handled, and the restore/idempotence tests check it came back to that same
+  starting value. Comparing to a constant could not have caught this bug: a
+  backend that hard-codes normal satisfies "equals normal" by construction.
+- Rationale recorded in `docs/DESIGN.md` → *Windows*; README and module docs
+  updated to say "puts memory priority back" rather than "back to normal".
+
 ### Semver policy for wrapped dependencies, stated — 2026-07-25
 - **`Error::ThreadPool`'s doc claimed the boxing kept rayon out of `bgrt`'s
   public API. It never did.** `RayonPool` derefs to `rayon::ThreadPool`, and

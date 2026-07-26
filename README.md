@@ -378,9 +378,13 @@ Two further Windows notes:
   `bgrt` uses instead. Since `bgrt` classifies threads rather than processes, the
   dangerous variant is unreachable by design.
 - **Background mode also lowers memory priority**, so the thread's pages get
-  trimmed first. `bgrt` puts memory priority back to normal immediately — trimmed
-  pages get faulted back in, costing the very disk I/O this class is trying to
-  avoid. Chromium does the same thing for the same reason.
+  trimmed first. `bgrt` puts memory priority back immediately — trimmed pages get
+  faulted back in, costing the very disk I/O this class is trying to avoid.
+  Chromium does the same thing for the same reason. What goes back is whatever
+  the thread had before the mode was entered, not a hard-coded "normal": a
+  process can lower its own default memory priority and threads inherit that, so
+  writing normal unconditionally would raise such a thread above the policy its
+  process chose. `bgrt` only ever lowers.
 
 ### Classification does not follow threads your dependencies spawn
 

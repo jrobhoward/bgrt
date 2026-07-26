@@ -7,33 +7,19 @@
 //! the mode's own "already in that state" error codes prove the transitions.
 #![allow(non_snake_case)]
 
-use core::ffi::c_void;
-
 use windows_sys::Win32::System::Threading::{
-    GetCurrentThread, GetThreadInformation, MEMORY_PRIORITY_INFORMATION, MEMORY_PRIORITY_NORMAL,
-    THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL, ThreadMemoryPriority,
+    MEMORY_PRIORITY_VERY_LOW, THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL,
 };
 
-use super::{apply, set_background_mode};
+use super::{apply, memory_priority, set_background_mode};
 use crate::qos::QosClass;
 use crate::test_support::current_thread_priority as current_priority;
 
-/// Read the calling thread's memory priority. Background mode lowers this as a
-/// side effect, so it doubles as evidence the mode was entered.
+/// Read the calling thread's memory priority, panicking rather than propagating.
+/// Background mode lowers this as a side effect, so it doubles as evidence the
+/// mode was entered.
 fn current_memory_priority() -> u32 {
-    let mut info = MEMORY_PRIORITY_INFORMATION { MemoryPriority: 0 };
-    // SAFETY: writes a correctly-sized memory-priority struct through the
-    // current-thread pseudo-handle.
-    let rc = unsafe {
-        GetThreadInformation(
-            GetCurrentThread(),
-            ThreadMemoryPriority,
-            (&raw mut info).cast::<c_void>(),
-            size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
-        )
-    };
-    assert_ne!(rc, 0, "GetThreadInformation(ThreadMemoryPriority) failed");
-    info.MemoryPriority
+    memory_priority().expect("GetThreadInformation(ThreadMemoryPriority) failed")
 }
 
 // Each test runs on a dedicated thread so it never lowers the test runner.
@@ -87,36 +73,48 @@ fn apply____background_then_default____clears_throttling_and_restores_priority()
 /// documented side effect stands in for it: entering background mode lowers
 /// memory priority. This asserts the raw mode really takes effect — without it,
 /// the restore test below would pass just as happily if the mode were never
-/// entered at all, since normal is also the default.
+/// entered at all, since the restored value is also the starting one.
 ///
-/// Deliberately compares against normal rather than asserting the exact value:
-/// what matters is that the mode demonstrably did something, not which low value
-/// Windows picked.
+/// Deliberately compares against the *observed* starting value rather than
+/// asserting either endpoint: what matters is that the mode demonstrably did
+/// something, not which low value Windows picked — and not that the thread began
+/// at `MEMORY_PRIORITY_NORMAL`, which it need not. A process may lower its own
+/// default, and threads inherit that; GitHub Actions `windows-latest` runners
+/// start threads at `MEMORY_PRIORITY_LOW`.
 #[test]
-fn set_background_mode____entered____lowers_memory_priority_below_normal() {
+fn set_background_mode____entered____lowers_memory_priority() {
     let h = std::thread::spawn(|| {
         let before = current_memory_priority();
         set_background_mode(true).unwrap();
         (before, current_memory_priority())
     });
     let (before, after) = h.join().unwrap();
-    assert_eq!(before, MEMORY_PRIORITY_NORMAL, "unexpected starting state");
-    assert!(
-        after < MEMORY_PRIORITY_NORMAL,
-        "background mode left memory priority at {after}; it should have lowered it"
-    );
+    if before == MEMORY_PRIORITY_VERY_LOW {
+        // Already at the floor, so there is nothing left to lower.
+        assert_eq!(after, before);
+    } else {
+        assert!(
+            after < before,
+            "background mode left memory priority at {after} (was {before}); \
+             it should have lowered it"
+        );
+    }
 }
 
 /// And this proves the backend undoes that side effect: paired with the test
 /// above, the two together show the mode was entered *and* memory priority was
-/// put back.
+/// put back — back to what the thread had, which is the point. Asserting
+/// `MEMORY_PRIORITY_NORMAL` here would let a backend that hard-codes normal pass
+/// while silently *raising* a thread that started lower.
 #[test]
 fn apply____background____restores_memory_priority_after_entering_background_mode() {
     let h = std::thread::spawn(|| {
+        let before = current_memory_priority();
         apply(QosClass::Background).unwrap();
-        current_memory_priority()
+        (before, current_memory_priority())
     });
-    assert_eq!(h.join().unwrap(), MEMORY_PRIORITY_NORMAL);
+    let (before, after) = h.join().unwrap();
+    assert_eq!(after, before);
 }
 
 /// Re-applying the same class must not fail. Windows reports
@@ -126,13 +124,14 @@ fn apply____background____restores_memory_priority_after_entering_background_mod
 #[test]
 fn apply____background_twice____is_idempotent() {
     let h = std::thread::spawn(|| {
+        let before = current_memory_priority();
         apply(QosClass::Background).unwrap();
         apply(QosClass::Background).unwrap();
-        (current_priority(), current_memory_priority())
+        (current_priority(), before, current_memory_priority())
     });
-    let (priority, memory) = h.join().unwrap();
+    let (priority, before, memory) = h.join().unwrap();
     assert_eq!(priority, THREAD_PRIORITY_BELOW_NORMAL);
-    assert_eq!(memory, MEMORY_PRIORITY_NORMAL);
+    assert_eq!(memory, before);
 }
 
 /// The mirror case: leaving background mode when never in it reports

@@ -283,8 +283,23 @@ background mode" is about the process API.
 **Memory priority is deliberately undone.** Background mode also drops the thread
 to `MEMORY_PRIORITY_VERY_LOW`, so its pages are trimmed first. That is a latency
 hazard rather than an energy win — trimmed pages fault back in, costing the very
-disk I/O the class is trying to avoid — so `bgrt` resets it to normal right
-afterwards. Chromium does the same.
+disk I/O the class is trying to avoid — so `bgrt` puts it back right afterwards.
+Chromium does the same.
+
+*Put back*, not *set to normal.* The first implementation wrote
+`MEMORY_PRIORITY_NORMAL` unconditionally, on the reading that normal is the
+documented system default for every thread. It is — but only as a *default*: a
+process can lower its own with `SetProcessInformation(ProcessMemoryPriority)`,
+and threads inherit that lowered value at creation. GitHub Actions
+`windows-latest` runners turn out to do exactly this, starting threads at
+`MEMORY_PRIORITY_LOW`; the CI assertion that a fresh thread reads normal is what
+caught it. On such a process the old code would have *raised* a `Background`
+thread's memory priority above what its process asked for — a classifier whose
+entire contract is that it only ever lowers. So `apply` now samples the thread's
+memory priority before entering the mode and restores that value. The test asserts
+against the sampled baseline rather than a constant, which is also what makes it
+capable of catching the bug: an assertion of "equals normal" passes for a backend
+that hard-codes normal, by construction.
 
 **Unmeasured, and labelled as such.** CI executes the behavioural tests on
 `windows-latest` (the mode is entered, memory priority is lowered by it and then

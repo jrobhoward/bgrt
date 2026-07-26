@@ -39,8 +39,17 @@
 //! Background mode also drops the thread to `MEMORY_PRIORITY_VERY_LOW`, so its
 //! pages are trimmed first. That is a latency hazard rather than an energy win —
 //! trimmed pages get faulted back in, costing the disk I/O this class is trying
-//! to avoid — so it is reset to `MEMORY_PRIORITY_NORMAL` immediately afterwards.
-//! Chromium does the same thing for the same reason.
+//! to avoid — so it is put back immediately afterwards. Chromium does the same
+//! thing for the same reason.
+//!
+//! The value put back is the one the thread *had*, read just before entering the
+//! mode — not a hard-coded `MEMORY_PRIORITY_NORMAL`. Normal is only the system
+//! default: a process can lower its own default with
+//! `SetProcessInformation(ProcessMemoryPriority)`, and new threads inherit that,
+//! so a thread can legitimately start below normal (observed on GitHub Actions
+//! `windows-latest` runners, which start threads at `MEMORY_PRIORITY_LOW`).
+//! Writing normal unconditionally would *raise* such a thread above the policy
+//! its process chose — `bgrt` only ever lowers.
 //!
 //! # Priority inversion
 //!
@@ -58,7 +67,7 @@ use windows_sys::Win32::Foundation::{
     ERROR_THREAD_MODE_ALREADY_BACKGROUND, ERROR_THREAD_MODE_NOT_BACKGROUND, GetLastError,
 };
 use windows_sys::Win32::System::Threading::{
-    GetCurrentThread, MEMORY_PRIORITY_INFORMATION, MEMORY_PRIORITY_NORMAL, SetThreadInformation,
+    GetCurrentThread, GetThreadInformation, MEMORY_PRIORITY_INFORMATION, SetThreadInformation,
     SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN, THREAD_MODE_BACKGROUND_END,
     THREAD_POWER_THROTTLING_CURRENT_VERSION, THREAD_POWER_THROTTLING_EXECUTION_SPEED,
     THREAD_POWER_THROTTLING_STATE, THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL,
@@ -80,10 +89,16 @@ pub(super) fn apply(class: QosClass) -> Result<(), Error> {
     };
 
     // Background mode first: it clobbers memory priority and nudges CPU
-    // priority, so the explicit settings below must land after it.
+    // priority, so the explicit settings below must land after it. The memory
+    // priority to put back has to be sampled before the mode clobbers it.
+    let previous_memory_priority = if background {
+        Some(memory_priority()?)
+    } else {
+        None
+    };
     set_background_mode(background)?;
-    if background {
-        restore_memory_priority()?;
+    if let Some(previous) = previous_memory_priority {
+        set_memory_priority(previous)?;
     }
     set_eco_qos(eco)?;
     set_priority(priority)?;
@@ -131,11 +146,36 @@ fn set_background_mode(enter: bool) -> Result<(), Error> {
     })
 }
 
-/// Put the thread's memory priority back to normal after background mode
-/// lowered it. See the module docs for why this is undone rather than kept.
-fn restore_memory_priority() -> Result<(), Error> {
+/// Read the current thread's memory priority, so background mode's clobbering of
+/// it can be undone with the value the thread actually had.
+fn memory_priority() -> Result<u32, Error> {
+    let mut info = MEMORY_PRIORITY_INFORMATION { MemoryPriority: 0 };
+    // SAFETY: writes a correctly-sized memory-priority struct through the
+    // current-thread pseudo-handle (which needs no closing).
+    let rc = unsafe {
+        GetThreadInformation(
+            GetCurrentThread(),
+            ThreadMemoryPriority,
+            (&raw mut info).cast::<c_void>(),
+            size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
+        )
+    };
+    if rc == 0 {
+        // SAFETY: `GetLastError` has no preconditions.
+        let code = unsafe { GetLastError() };
+        return Err(Error::Backend {
+            syscall: "GetThreadInformation(ThreadMemoryPriority)",
+            source: std::io::Error::from_raw_os_error(code as i32),
+        });
+    }
+    Ok(info.MemoryPriority)
+}
+
+/// Put the thread's memory priority back after background mode lowered it. See
+/// the module docs for why this is undone rather than kept.
+fn set_memory_priority(priority: u32) -> Result<(), Error> {
     let info = MEMORY_PRIORITY_INFORMATION {
-        MemoryPriority: MEMORY_PRIORITY_NORMAL,
+        MemoryPriority: priority,
     };
     // SAFETY: passing a fully-initialized, correctly-sized memory-priority
     // struct for the current-thread pseudo-handle.
