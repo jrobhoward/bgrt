@@ -135,6 +135,21 @@ Efficiency-core placement on macOS is the opposite case, cutting energy about 2
 to 4 times per unit of work. Placement and frequency are different levers with
 different economics.
 
+## Windows, AMD Threadripper (homogeneous, unprivileged, `--workers 4`)
+
+Same hardware as the Linux runs above, rebooted into Windows 11.
+
+```text
+executor              wall_ms       work      work/s     %E  mean_mhz  max_mhz  energy_j
+default                  3000    3455173     1151646    n/a      3394     3394       n/a
+utility                  3000    3406668     1135488    n/a      3394     3394       n/a
+background               3000    3449102     1149628    n/a      3394     3394       n/a
+background-threads       3000    3469640     1156373    n/a      3394     3394       n/a
+verdict: background peak frequency ≤ (stayed cool) default
+```
+
+All four executors are flat, matching the Linux result on the same hardware. The per-worker rate (~288K work/s across 4 workers) matches the single-worker Linux run, confirming the computation is consistent across OSes. The expected result on a homogeneous CPU with nothing competing: priority differences only bite under contention. `%E` is `n/a` — all Threadripper cores report the same efficiency class. Frequency is readable unprivileged via `CallNtPowerInformation` (3394 MHz). Windows exposes no energy counter; `energy_j` is always `n/a`.
+
 ---
 
 # Disk results
@@ -199,6 +214,25 @@ that is barely reading is drift between phases, not contention.
 If `default`'s `fg_prot%` is near 100%, the run did not measure contention. The
 harness notices this and prints a hint to raise `--workers` and
 `--io-foreground`.
+
+## Windows, AMD Threadripper (NVMe, unprivileged)
+
+Same hardware as the Linux CPU runs above, rebooted into Windows 11.
+
+```text
+disk: foreground baseline 1349.9 MiB/s, reads direct
+executor              solo_mib/s  cont_mib/s    fg_mib/s  fg_prot%    p95_us
+default                   1359.0       987.5       986.5      73.1       379
+utility                   1272.1       994.4       996.2      73.8       382
+background                 323.0         0.1      1371.6     101.6   2738946
+background-threads         435.3         0.1      1371.1     101.6   2746403
+verdict: background left the foreground ≥ (got out of the way) disk throughput than default did
+```
+
+- **`Default` and `Utility` split the device.** Both hold near 990 MiB/s under contention, and the foreground keeps about 73%. `Utility` gets no disk yield on Windows, mirroring the macOS result.
+- **`Background` gives it up entirely.** 323 MiB/s alone drops to 0.1 MiB/s under contention, and the foreground keeps 101.6% — the I/O capacity the background thread would have used is available to the foreground instead. p95 latency reaches 2.7 s against 379 µs for `Default`.
+- **The p95 latency is larger than on macOS.** 2.7 s here against 33 ms on macOS for `Background`. Both platforms throttle background I/O heavily; `THREAD_MODE_BACKGROUND_BEGIN` on Windows holds reads longer before scheduling them than `QOS_CLASS_BACKGROUND` on macOS does.
+- **It still makes progress.** 0.1 MiB/s is not zero: the throttle is weighted-fair, not a complete stop.
 
 ---
 
@@ -276,7 +310,6 @@ were checked first.
 | # | Machine or configuration | What it settles | Command |
 |--:|---|---|---|
 | 1 | Linux on Intel hybrid (Alder, Raptor, Meteor, or Arrow Lake) | The largest gap. E-core detection through the `cpu_atom` PMU, and `sched_setaffinity` against a non-empty core set, have never executed — they are unit-tested only. `--pin` is untested code rather than a measured feature | `bgrt-bench --duration 3 --pin` |
-| 2 | Windows, any machine | Nothing on Windows has been measured. CPU throughput under load and the disk behaviour are both reasoned from Microsoft's documentation and from what Chromium ships | `bgrt-bench --workload both --duration 3 --workers 4 --io-foreground 4` |
 | 3 | Linux disk, once per I/O scheduler: `bfq`, `mq-deadline`, `none` | Whether the `ioprio_set` mapping bites, and how much the scheduler choice dominates the result. `none` should show nothing, and confirming that is the point | `bgrt-bench --workload io --duration 3 --workers 4 --io-foreground 4` |
 | 4 | Linux on arm64 big.LITTLE (an RK3588 board such as Orange Pi 5 or Rock 5B, an Odroid N2+, or Asahi Linux on Apple silicon) | Differing `cpu_capacity` values. CI runs the arm64 read path on a Neoverse N2 runner, but every CPU there reports 1024, so only the all-equal branch executes. A machine with a Cortex-A76 and A55 mix is what makes the detection do work — note that a Raspberry Pi 5, Ampere Altra, and Snapdragon X are all homogeneous and would not | `bgrt-bench --duration 3 --pin` |
 | 5 | Windows on Intel hybrid | The E and P labelling branch in telemetry. CI runners are homogeneous VMs, so the code that marks a core as efficiency-class has only ever been unit-tested. Placement is EcoQoS's job, so this is a telemetry gap rather than a behaviour one | `bgrt-bench --duration 3` |
