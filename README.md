@@ -107,13 +107,16 @@ instead of `SCHED_IDLE`.
 
 Low-priority work is slower work. It's a tradeoff, and `bgrt-bench` measures it.
 
-On an Apple M1, `Background` CPU work ran 99.8% on efficiency cores at 1029MHz
-(vs 2751MHz), and drew about 12 times less CPU power — roughly 4 times less
-per unit of work — at about a third of the throughput.
+On an Apple M1, `Background` CPU work ran about 99% on efficiency cores in every
+run, peaking below `Default`'s clock every time, and drew 3 to 13 times less CPU
+power — 2 to 4 times less per unit of work — at 38% to 64% of the throughput.
+The spread is the efficiency cluster's own clock, which the OS picks; the
+placement is the part that held. Numbers in
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
-On the disk side, a `Background` reader drops from ~1000 MiB/s to 7.9 MiB/s when a foreground app is
-reading too, and leaves that app 99.6% of its uncontended throughput; a
-`Default`-class competitor leaves it 76.8%.
+On the disk side, a `Background` reader drops from ~1000 MiB/s to under 10 MiB/s when a foreground app is
+reading too, and leaves that app 93% to 99% of its uncontended throughput; a
+`Default`-class competitor leaves it 56% to 79%.
 
 Two results are worth reading before picking a class:
 

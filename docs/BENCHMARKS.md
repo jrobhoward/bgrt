@@ -28,20 +28,43 @@ failing.
 
 ## Apple M1 (heterogeneous, `sudo … --mac-power`)
 
+Nothing else running but the harness:
+
 ```text
 executor              wall_ms       work      work/s     %E  mean_mhz  max_mhz  energy_j
-default                  3000      15865        5288   37.6      2124     2751     3.482
-utility                  3000      15676        5225   36.3      2095     2719     3.335
-background               3000       5106        1702   99.8      1028     1029     0.275
-background-threads       3000       5213        1737   98.7      1124     1132     0.491
+default                  3000      15915        5305   53.8      2410     2812     4.488
+utility                  3000      15731        5244   54.7      2380     2761     4.154
+background               3000      10130        3376   99.9      2062     2063     1.477
+background-threads       3000      10153        3384   99.8      2061     2064     1.474
 verdict: background peak frequency ≤ (stayed cool) default
 ```
 
-`Background` ran 99.8% on the efficiency cores against 37.6% for `Default`,
-peaked at 1029 MHz against 2751, and drew about 12 times less CPU power (0.275 J
-against 3.482 J over the same 3 s) at about a third of the throughput. Per unit
-of work that is still about 4 times less energy. This is the main result: work
-stays on the efficiency cores, and the clocks and fans stay down.
+`Background` ran 99.9% on the efficiency cores against 53.8% for `Default`,
+peaked at 2063 MHz against 2812, and drew about 3 times less CPU power (1.477 J
+against 4.488 J over the same 3 s) at about 64% of the throughput. Per unit of
+work that is about 1.9 times less energy. This is the main result: work stays on
+the efficiency cores, and the clocks and fans stay down.
+
+### The efficiency cores' own clock varies between runs
+
+Three runs on the same M1, `background` row only, against the `default` row from
+the same run:
+
+| run | work/s | %E | max_mhz | energy_j | power vs default | energy per work vs default |
+|---|---|---|---|---|---|---|
+| 1 | 1702 | 99.8 | 1029 | 0.275 | 12.7 times less | 4.1 times less |
+| 2 | 1987 | 98.7 | 1284 | 0.470 | 7.2 times less | 2.7 times less |
+| 3 (above) | 3376 | 99.9 | 2063 | 1.477 | 3.0 times less | 1.9 times less |
+
+Placement did not move: `Background` sat on the efficiency cores in all three.
+What moved is the clock those cores ran at, across most of the M1 E-cluster's
+range, and throughput tracked it almost linearly. So the energy advantage is a
+range — roughly 3 to 13 times less CPU power, 2 to 4 times less per unit of work
+— and the part `bgrt` asks for is the placement. The clock is the OS's call.
+
+`Default`'s own numbers moved too (37.6% to 53.8% on the efficiency cores), so
+the ratios above are not a background-only effect. Compare rows within a run,
+not across runs.
 
 > The `--mac-power` figures — `%E`, frequency, energy — come from
 > `powermetrics`, which reports CPU state for the whole system rather than per
@@ -108,8 +131,8 @@ total energy. What clamping buys is lower instantaneous power — a cooler, quie
 machine that is not taking thermal budget from foreground work — rather than a
 smaller battery bill for a fixed amount of work.
 
-Efficiency-core placement on macOS is the opposite case, cutting energy about 4
-times per unit of work. Placement and frequency are different levers with
+Efficiency-core placement on macOS is the opposite case, cutting energy about 2
+to 4 times per unit of work. Placement and frequency are different levers with
 different economics.
 
 ---
@@ -127,33 +150,33 @@ needed on any platform, macOS included.
 
 ```text
 $ bgrt-bench --workload io --duration 3 --workers 4 --io-foreground 4
-disk: foreground baseline 1301.2 MiB/s, reads direct
+disk: foreground baseline 1349.9 MiB/s, reads direct
 executor              solo_mib/s  cont_mib/s    fg_mib/s  fg_prot%    p95_us
-default                    988.5       996.6       998.7      76.8       394
-utility                   1058.4        12.7      1267.9      97.4     22770
-background                1003.0         7.9      1295.3      99.6     32870
-background-threads        1021.6         8.0      1294.0      99.5     32872
+default                    993.1       760.1       762.8      56.5       808
+utility                    984.6        12.7      1276.4      94.6     22737
+background                1097.8         8.8      1299.8      96.3     32892
+background-threads        1025.8         9.4      1277.5      94.6     32855
 verdict: background left the foreground ≥ (got out of the way) disk throughput than default did
 ```
 
-- **`Default` splits the device.** Both sides land near 1000 MiB/s and the
-  foreground keeps 76.8% of its baseline. That is fair sharing, which is correct
+- **`Default` splits the device.** Both sides land near 760 MiB/s and the
+  foreground keeps 56.5% of its baseline. That is fair sharing, which is correct
   behaviour and also exactly what is not wanted from a backup or an indexer.
-- **`Background` gives it up.** About 1000 MiB/s alone drops to 7.9 MiB/s under
-  contention, roughly 125 times less, and the foreground keeps 99.6%. Latency
-  says the same thing from the other side: 32.9 ms at p95 against 0.39 ms.
+- **`Background` gives it up.** About 1100 MiB/s alone drops to 8.8 MiB/s under
+  contention, roughly 125 times less, and the foreground keeps 96.3%. Latency
+  says the same thing from the other side: 32.9 ms at p95 against 0.81 ms.
   Darwin is pacing those reads rather than queueing them behind the foreground's.
-- **It still makes progress.** 7.9 MiB/s is slow, not stopped. That is the
+- **It still makes progress.** 8.8 MiB/s is slow, not stopped. That is the
   weighted-fair rule — best-effort, never `IOPRIO_CLASS_IDLE` — showing up as a
   number.
-- **`Utility` throttles nearly as hard as `Background`,** at 97.4%. On the CPU
+- **`Utility` throttles nearly as hard as `Background`,** at 94.6%. On the CPU
   side `Utility` tracks `Default` closely, so the middle ground the README
   suggests for latency-sensitive low-priority work is not a middle ground on
   disk. That is Apple's mapping of `QOS_CLASS_UTILITY` rather than a `bgrt`
   choice.
 
-Across runs, `default` lands between 62% and 79% and the low-priority classes
-between 95% and 100%. The ordering has held every time.
+Across runs, `default` lands between 56% and 79% and the low-priority classes
+between 93% and 100%. The ordering has held every time.
 
 ## Saturation matters — read the `default` row first
 
@@ -161,14 +184,17 @@ The same machine at the default `--workers 1 --io-foreground 1`:
 
 ```text
 executor              solo_mib/s  cont_mib/s    fg_mib/s  fg_prot%    p95_us
-default                    408.0       396.4       396.3      98.4       196
-background                 268.2         2.0       401.3      99.6     31108
+default                    420.5       405.4       405.6      97.1       197
+background                 288.1         2.3       410.8      98.3     31144
 ```
 
-`Default` scores 98.4% here, not because it behaved differently but because one
+`Default` scores 97.1% here, not because it behaved differently but because one
 reader at queue depth 1 never saturated the SSD, so there was nothing to contend
 for. The `background` row is unchanged, since the macOS throttle has an
-unconditional component, but the comparison no longer means anything.
+unconditional component, but the comparison no longer means anything. `Utility`
+has twice come out below `Default` in this configuration (82.7% and 74.9%) while
+reading under 3 MiB/s itself — a foreground losing throughput to a competitor
+that is barely reading is drift between phases, not contention.
 
 If `default`'s `fg_prot%` is near 100%, the run did not measure contention. The
 harness notices this and prints a hint to raise `--workers` and
@@ -254,7 +280,8 @@ were checked first.
 | 3 | Linux disk, once per I/O scheduler: `bfq`, `mq-deadline`, `none` | Whether the `ioprio_set` mapping bites, and how much the scheduler choice dominates the result. `none` should show nothing, and confirming that is the point | `bgrt-bench --workload io --duration 3 --workers 4 --io-foreground 4` |
 | 4 | Linux on arm64 big.LITTLE (Raspberry Pi 5, Snapdragon X, Ampere) | The original `cpu_capacity` detection path — the arm64 interface it was written for — has also never run on real heterogeneous hardware | `bgrt-bench --duration 3 --pin` |
 | 5 | Windows on Intel hybrid | The E and P labelling branch in telemetry. CI runners are homogeneous VMs, so the code that marks a core as efficiency-class has only ever been unit-tested. Placement is EcoQoS's job, so this is a telemetry gap rather than a behaviour one | `bgrt-bench --duration 3` |
-| 6 | Apple Silicon after the M1 (M2, M3, M4, and a Pro, Max, or Ultra) | Whether efficiency-core confinement and the 12-times power result hold as the P-to-E ratio changes | `sudo bgrt-bench --duration 3 --mac-power` |
+| 6 | Apple Silicon after the M1 (M2, M3, M4, and a Pro, Max, or Ultra) | Whether efficiency-core confinement and the power ratio hold as the P-to-E ratio changes | `sudo bgrt-bench --duration 3 --mac-power` |
+| 8 | The same Mac on battery, on AC, and with Low Power Mode on | What picks the efficiency cluster's clock. Three runs on one M1 span 1029 to 2063 MHz and a 13-to-3-times energy ratio (see [above](#the-efficiency-cores-own-clock-varies-between-runs)); which conditions produce which end is unknown | `sudo bgrt-bench --duration 3 --mac-power` |
 | 7 | Any homogeneous Linux machine, with the CPU contended | `nice(19)` does nothing without contention, and every Linux CPU run on record is uncontended, so the CPU half of the class is unproven on Linux | see below |
 
 Row 7 needs two processes. The CPU workload has no foreground-contention mode,

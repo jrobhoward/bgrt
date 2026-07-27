@@ -374,9 +374,9 @@ of them, taken the other way, would have produced a misleading benchmark.
   the real case anyway — a background job already running when foreground work
   shows up.
 
-What it found: on an M1, `Background` drops from about 1000 MiB/s alone to about
-8 MiB/s against a foreground reader, and leaves that reader 99.6% of its
-uncontended throughput where a `Default`-class competitor leaves it 76.8%. Slow
+What it found: on an M1, `Background` drops from about 1000 MiB/s alone to under
+10 MiB/s against a foreground reader, and leaves that reader 93% to 99% of its
+uncontended throughput where a `Default`-class competitor leaves it 56% to 79%. Slow
 but not stopped, which is the weighted-fair rule made visible. Two results were
 surprising and are recorded in [`BENCHMARKS.md`](BENCHMARKS.md): `Utility`
 throttles nearly as hard as `Background` on macOS, which is Apple's mapping
@@ -618,8 +618,17 @@ to re-test, rather than the conclusion drawn from it.
   more efficient for a fixed batch. The win is lower instantaneous power — cooler,
   quieter, not taking thermal budget from foreground work — rather than a smaller
   battery bill per unit of work. macOS efficiency-core placement is the opposite
-  case, cutting energy about 4 times per unit of work. Different levers, different
-  economics.
+  case, cutting energy about 2 to 4 times per unit of work. Different levers,
+  different economics.
+- **On macOS the placement repeats; the clock does not.** Three runs of the same
+  harness on the same idle M1 put `Background` on the efficiency cores every time
+  (about 99%), but those cores ran at 1029, 1284 and 2063 MHz — most of the
+  E-cluster's range — with throughput tracking the clock almost linearly and the
+  energy advantage over `Default` moving between 13 and 3 times. `Default`'s own
+  efficiency-core residency moved as well (37.6% to 53.8%), so this is the
+  system's power management responding to conditions rather than anything the
+  class controls. What a caller gets from `Background` is the placement; the
+  clock follows from it. Quote the range, and compare rows within a run.
 - **Linux RAPL is whole-package on workstation and server CPUs.** On a 16-core
   Threadripper, `energy_uj` covers the entire package: all cores, memory
   controller, and I/O die. Per-thread power attribution is not possible, and the
