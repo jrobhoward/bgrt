@@ -163,8 +163,12 @@ needs a doc comment. Doc examples that use a gated API must be `cfg`-gated too
 **Platform code:** keep OS-specific FFI behind the `backend/` modules,
 `cfg`-gated; platform-specific tests are `cfg`-gated too. **CI
 (`.github/workflows/ci.yml`) is where Linux and Windows code actually
-executes** — a 3-OS matrix running clippy, the full suite, four feature
-permutations, and an MSRV job. The two cross-compile `clippy` commands above are
+executes** — a 5-entry matrix (Linux, macOS, Windows, plus `ubuntu-24.04-arm`
+and `windows-11-arm`; `macos-latest` is already aarch64) running clippy, the full
+suite, four feature permutations, and an MSRV job. Those runners are VMs: they
+prove the backends *run* on aarch64, not that placement or frequency behave —
+nothing measurable comes out of a homogeneous vCPU with no cpufreq or RAPL. The
+two cross-compile `clippy` commands above are
 the *local* pre-push check on the author's macOS hardware: they prove the other
 backends type-check, not that they work. Run them before calling a change done,
 review FFI carefully, and expect CI to be the real verdict.

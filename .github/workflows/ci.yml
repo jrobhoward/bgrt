@@ -23,21 +23,77 @@ jobs:
   # The point of the matrix: `backend/{macos,linux,windows}.rs` and their tests
   # are cfg-gated, so each OS is the *only* place its backend actually executes.
   # Cross-compiling (as done locally) proves it type-checks, not that it works.
+  #
+  # The two `-arm` labels extend that to aarch64. The syscalls the Linux backend
+  # issues go through `libc::SYS_*` rather than hardcoded numbers, so the
+  # architecture is right by construction — but until these runners existed, no
+  # `ioprio_set` or `sched_setattr` from this crate had ever run on anything but
+  # x86_64. `macos-latest` is already Apple silicon, so it covers the third.
+  # These are cloud VMs: they execute the backends, they cannot measure them
+  # (homogeneous vCPUs, no `cpu_capacity`, no cpufreq, no RAPL).
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-latest
+          - windows-latest
+          - windows-11-arm
     steps:
       - uses: actions/checkout@v4
 
+      # Every image but `windows-11-arm` ships rustup; that one carries a
+      # slimmer toolset, so fall back to `rustup-init` there.
       - name: Install toolchain
         run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl -sSfLo rustup-init.exe https://static.rust-lang.org/rustup/dist/aarch64-pc-windows-msvc/rustup-init.exe
+            ./rustup-init.exe -y --profile minimal --default-toolchain none
+            echo "$USERPROFILE\\.cargo\\bin" >> "$GITHUB_PATH"
+            export PATH="$USERPROFILE/.cargo/bin:$PATH"
+          fi
           rustup toolchain install stable --profile minimal --component clippy
           rustup default stable
           rustc --version
+
+      # What the runner actually is. GitHub can change the hardware behind a
+      # label without notice, and `topology.rs` reads exactly these files, so a
+      # log of them is the evidence for whether any runner is heterogeneous.
+      # Diagnostic only: a missing tool or sysfs path must never fail the job.
+      - name: Runner CPU probe
+        continue-on-error: true
+        run: |
+          set +e
+          echo "== uname"; uname -a
+          case "${{ runner.os }}" in
+            Linux)
+              echo "== lscpu"; lscpu | head -25
+              echo "== MIDR (arm64 implementer/part)"
+              grep -E 'CPU implementer|CPU part|model name' /proc/cpuinfo | sort -u
+              echo "== cpu_capacity (heterogeneity: differing values = big.LITTLE)"
+              grep . /sys/devices/system/cpu/cpu*/cpu_capacity 2>/dev/null || echo absent
+              echo "== hybrid PMU (Intel cpu_atom)"
+              cat /sys/bus/event_source/devices/cpu_atom/cpus 2>/dev/null || echo absent
+              echo "== cpufreq governor"
+              cat /sys/devices/system/cpu/cpufreq/policy*/scaling_governor 2>/dev/null || echo absent
+              echo "== RAPL"; ls /sys/class/powercap 2>/dev/null || echo absent
+              echo "== block scheduler"
+              grep . /sys/block/*/queue/scheduler 2>/dev/null | head -5 || echo absent
+              ;;
+            macOS)
+              sysctl -n machdep.cpu.brand_string
+              echo "== perflevels (perflevel1 present = heterogeneous)"
+              sysctl hw.ncpu hw.nperflevels hw.perflevel0.logicalcpu hw.perflevel1.logicalcpu 2>/dev/null
+              ;;
+            Windows)
+              powershell -Command "Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed | Format-List"
+              ;;
+          esac
+          exit 0
 
       - uses: actions/cache@v4
         with:
@@ -74,6 +130,15 @@ jobs:
 
       - name: Test (all features)
         run: cargo test -p bgrt --all-features --locked
+
+      # The same question as the probe above, answered by the crate's own
+      # detection instead of by raw sysfs: `%E` reads `n/a` exactly when
+      # `topology` found no heterogeneity, and a number when it found some.
+      # A debug build is fine — this run is read for its telemetry columns, not
+      # its throughput.
+      - name: Topology as bgrt detects it
+        continue-on-error: true
+        run: cargo run -p bgrt-bench --locked -- --duration 0.5 --interval 20 --executors default,background
 
   # Guards `rust-version = "1.85.0"`. Matrixed because an MSRV violation could
   # sit in a cfg-gated backend that only compiles on its own OS.
