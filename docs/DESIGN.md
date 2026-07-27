@@ -127,8 +127,9 @@ exposes the same trio of knobs (`qos`, `pin_efficiency_cores`,
 all three. A new knob is added to all three, or the asymmetry gets explained.
 
 Each box below lists only what makes that builder different. The shared trio is
-stated once, in the note; printing it three times would say one thing three times
-and bury the part that matters, which is the three edges meeting at `classify`.
+stated in the paragraph above; printing it in all three boxes would say one thing
+three times and bury the part that matters, which is the three edges meeting at
+`classify`.
 
 ```mermaid
 classDiagram
@@ -170,8 +171,6 @@ classDiagram
     RuntimeBuilder ..> classify : on_thread_start
     RayonBuilder ..> classify : start_handler
     ThreadBuilder ..> classify : top of thread body
-
-    note "all three also expose qos() / pin_efficiency_cores() / clamp_frequency()"
 ```
 
 `classify` is the one call site for the three per-thread operations, in order:
