@@ -278,6 +278,15 @@ every core is an efficiency core. Keeping that decision in one testable function
 is what allows it to be checked on a machine with neither topology. macOS has no
 unprivileged equivalent, so detection returns empty there.
 
+The all-equal case now runs on real hardware rather than only in a unit test. The
+aarch64 CI runner is a Neoverse N2 that publishes `cpu_capacity` for all four
+CPUs with the same value, 1024 — present, so the read path executes, and uniform,
+so the answer must be "homogeneous" and not "four efficiency cores". Detection
+returns empty and `%E` reads `n/a`. The Windows arm64 runner reports a uniform
+`EfficiencyClass` and reads the same way, while its frequency telemetry works
+(3398 MHz of a 3399 MHz part), so `CallNtPowerInformation` is exercised on
+aarch64 too.
+
 Pinning is Linux only. `pin_efficiency_cores(true)` adds `sched_setaffinity` over
 the detected set. It is off by default because pinning is a hard restriction that
 hurts once the efficiency cores are saturated. It stays a no-op on macOS and

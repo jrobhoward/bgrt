@@ -46,16 +46,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Every image but `windows-11-arm` ships rustup; that one carries a
-      # slimmer toolset, so fall back to `rustup-init` there.
       - name: Install toolchain
         run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl -sSfLo rustup-init.exe https://static.rust-lang.org/rustup/dist/aarch64-pc-windows-msvc/rustup-init.exe
-            ./rustup-init.exe -y --profile minimal --default-toolchain none
-            echo "$USERPROFILE\\.cargo\\bin" >> "$GITHUB_PATH"
-            export PATH="$USERPROFILE/.cargo/bin:$PATH"
-          fi
           rustup toolchain install stable --profile minimal --component clippy
           rustup default stable
           rustc --version
@@ -81,8 +73,8 @@ jobs:
               echo "== cpufreq governor"
               cat /sys/devices/system/cpu/cpufreq/policy*/scaling_governor 2>/dev/null || echo absent
               echo "== RAPL"; ls /sys/class/powercap 2>/dev/null || echo absent
-              echo "== block scheduler"
-              grep . /sys/block/*/queue/scheduler 2>/dev/null | head -5 || echo absent
+              echo "== block scheduler (loop devices filtered out)"
+              grep . /sys/block/*/queue/scheduler 2>/dev/null | grep -v '/loop' | head -5 || echo absent
               ;;
             macOS)
               sysctl -n machdep.cpu.brand_string
