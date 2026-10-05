@@ -1,7 +1,9 @@
 //! Tests for the Linux uclamp frequency clamp.
 #![allow(non_snake_case)]
 
-use super::{clamp_current_thread, util_max_for};
+use rstest::rstest;
+
+use super::{clamp_current_thread, governor_honours_clamp, note_clamp_governor, util_max_for};
 use crate::qos::QosClass;
 use crate::test_support::current_uclamp_max;
 
@@ -47,4 +49,27 @@ fn clamp_current_thread____utility____is_a_noop() {
     });
     let (before, after) = h.join().unwrap();
     assert_eq!(before, after);
+}
+
+#[rstest]
+#[case("schedutil", true)]
+#[case("schedutil\n", true)] // as read from sysfs
+#[case("ondemand", false)] // the Raspberry Pi image default
+#[case("performance", false)]
+#[case("powersave", false)] // intel_pstate active mode
+#[case("conservative", false)]
+fn governor_honours_clamp____governor____only_schedutil(
+    #[case] governor: &str,
+    #[case] expected: bool,
+) {
+    assert_eq!(governor_honours_clamp(governor), expected);
+}
+
+#[rstest]
+#[case(QosClass::Background)]
+#[case(QosClass::Utility)]
+#[case(QosClass::Default)]
+fn note_clamp_governor____any_host____does_not_panic(#[case] class: QosClass) {
+    // Reads real sysfs, which may be absent (VMs, containers): must stay silent.
+    note_clamp_governor(class);
 }

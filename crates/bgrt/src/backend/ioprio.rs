@@ -24,11 +24,14 @@
 //!
 //! # What this does not do
 //!
-//! Whether the priority is *honoured* is the I/O scheduler's business: BFQ
-//! respects it fully, `mq-deadline` since 5.18, and `none` — a common default
-//! for NVMe — ignores it entirely. Like the `uclamp` frequency clamp, this is a
-//! hint that does nothing on some configurations; check with
-//! `cat /sys/block/<dev>/queue/scheduler`.
+//! Whether the priority is *honoured* is the I/O scheduler's business, and in
+//! practice only BFQ honours it. `mq-deadline` keeps one queue per priority
+//! *class* (real-time, best-effort, idle) and ignores the level within a class,
+//! so best-effort 7 and best-effort 4 look the same to it; the idle class would
+//! register, but that is the starvation this module rules out. `none` — a
+//! common default for NVMe — ignores priority entirely. Like the `uclamp`
+//! frequency clamp, this is a hint that does nothing on some configurations;
+//! check with `cat /sys/block/<dev>/queue/scheduler`.
 
 #[cfg(target_os = "linux")]
 use crate::error::Error;

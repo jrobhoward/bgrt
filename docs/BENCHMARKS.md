@@ -22,6 +22,12 @@ frequency, and energy need elevation on some — see
 Anything the OS or the privilege level cannot provide prints `n/a` rather than
 failing.
 
+The `verdict:` lines in captures made before 2026-10-05 come from an older
+harness that compared peak frequency and `fg_prot%` with no tolerance. The
+harness now compares mean frequency within 5% and `fg_prot%` within 5 points,
+and reports a third outcome, about the same, for rows inside that band. On Linux
+it also prints the cpufreq governor above the CPU table.
+
 ---
 
 # CPU results
@@ -135,6 +141,79 @@ Efficiency-core placement on macOS is the opposite case, cutting energy about 2
 to 4 times per unit of work. Placement and frequency are different levers with
 different economics.
 
+## Linux, Raspberry Pi 5 (homogeneous, `--clamp-frequency`)
+
+Ubuntu 26.04, kernel 7.0, four Cortex-A76 cores in one cpufreq policy, all at
+`cpu_capacity` 1024. The clock range is 1500 to 2400 MHz, so the deepest a clamp
+can go is about 37% below the top. The `schedutil` governor was set for the run;
+the image ships with `ondemand`, which ignores `uclamp`.
+
+```text
+executor              wall_ms       work      work/s     %E  mean_mhz  max_mhz  energy_j
+default                 10000      26587        2659    n/a      2400     2400       n/a
+utility                 10000      26584        2658    n/a      2400     2400       n/a
+background              10000      16664        1666    n/a      1509     2400       n/a
+background-threads      10000      16672        1667    n/a      1505     2400       n/a
+verdict: background peak frequency ≤ (stayed cool) default
+```
+
+`Background` sat at the 1500 MHz floor and kept about 63% of the throughput,
+which is the frequency ratio (1500 / 2400). The floor binds here rather than the
+clamp, so the result is as deep as this board allows. The `max_mhz` of 2400 is
+one early sample before the governor reacts; a repeat run peaked at 1600.
+Without `--clamp-frequency`, all four rows are flat at 2400 MHz under both
+`ondemand` and `schedutil`, as on the other homogeneous machines.
+
+The board has no RAPL, so `energy_j` is `n/a`. The PMIC reports current and
+voltage per rail through `vcgencmd pmic_read_adc` (root), so the `VDD_CORE` rail
+was sampled at about 2.4 Hz while each executor ran on its own for 10 s with
+`--clamp-frequency`:
+
+| executor | rail W | above idle W | core V | work/s |
+|---|---|---|---|---|
+| idle | 0.423 | — | 0.751 | — |
+| default | 0.931 | 0.508 | 0.844 | 2658 |
+| utility | 0.925 | 0.502 | 0.841 | 2656 |
+| background | 0.597 | 0.174 | 0.753 | 1679 |
+| background-threads | 0.593 | 0.170 | 0.753 | 1675 |
+
+The rail draws about 1.6 times less in total and about 2.9 times less above
+idle. Unlike the i7, the core voltage drops with the clock (0.844 V to 0.753 V),
+so the energy above idle per unit of work also falls, about 104 µJ against 191.
+Counting the rail's idle draw, energy per unit of work is about even (356 µJ
+against 350). This covers the core rail only, not the whole board, and the
+sampler itself runs `vcgencmd` on one of the four cores. The fan did not spin up
+in any run; one busy core is not enough load on this board.
+
+## Linux, Raspberry Pi 5, CPU contended
+
+Every other Linux CPU run on this page is uncontended, where `nice` has nothing
+to arbitrate. Here two harness processes ran at once on the same four cores,
+four workers each, for 15 s under `schedutil`, without `--clamp-frequency`:
+
+```bash
+taskset -c 0-3 ./target/release/bgrt-bench --duration 15 --workers 4 --executors default &
+taskset -c 0-3 ./target/release/bgrt-bench --duration 15 --workers 4 --executors background &
+wait
+```
+
+| pair | default work/s | other work/s | default keeps | other gets |
+|---|---|---|---|---|
+| either one alone | 10625 | — | 100% | — |
+| default + default | 5311 | 5307 | 50.0% | 49.9% |
+| default + utility | 9571 | 1046 | 90.1% | 9.8% |
+| default + background | 10423 | 204 | 98.1% | 1.9% |
+
+The split matches the CFS weights: `nice(10)` against `nice(0)` predicts about
+9.7%, and `nice(19)` about 1.4%. `Background` gives up nearly all of the CPU to
+`Default` and still makes progress, which is the weighted-fair rule working on
+CPU the way the disk results show it on I/O. Both processes ran at 2400 MHz
+throughout, since the cores were busy either way.
+
+The CPU workload has no foreground-contention mode, unlike the disk one, so this
+needs two processes. Adding one in the shape `--workload io` uses would turn it
+into a single run.
+
 ## Windows, AMD Threadripper (homogeneous, unprivileged, `--workers 4`)
 
 Same hardware as the Linux runs above, rebooted into Windows 11.
@@ -234,6 +313,57 @@ verdict: background left the foreground ≥ (got out of the way) disk throughput
 - **The p95 latency is larger than on macOS.** 2.7 s here against 33 ms on macOS for `Background`. Both platforms throttle background I/O heavily; `THREAD_MODE_BACKGROUND_BEGIN` on Windows holds reads longer before scheduling them than `QOS_CLASS_BACKGROUND` on macOS does.
 - **It still makes progress.** 0.1 MiB/s is not zero: the throttle is weighted-fair, not a complete stop.
 
+## Linux, Raspberry Pi 5 (microSD, ext4), once per I/O scheduler
+
+The scratch file was on the root filesystem (`--io-dir /var/tmp/…`; `/tmp` is
+tmpfs on this image and cannot do direct I/O). The device is a microSD card, so
+throughput is low, but four readers saturate it. Each scheduler was run twice,
+with the same result both times.
+
+`bfq`:
+
+```text
+disk: foreground baseline 66.6 MiB/s, reads direct, scheduler bfq
+executor              solo_mib/s  cont_mib/s    fg_mib/s  fg_prot%    p95_us
+default                     66.2        33.3        32.7      49.0     13229
+utility                     66.3         6.3        59.5      89.3    130258
+background                  66.6         4.2        62.5      93.9    135333
+background-threads          66.6         4.1        62.8      94.3    227704
+verdict: background left the foreground ≥ (got out of the way) disk throughput than default did
+```
+
+`mq-deadline`, the image's default for the card:
+
+```text
+disk: foreground baseline 66.8 MiB/s, reads direct, scheduler mq-deadline
+executor              solo_mib/s  cont_mib/s    fg_mib/s  fg_prot%    p95_us
+default                     62.4        32.9        33.7      50.4     14120
+utility                     66.5        33.4        33.0      49.5     14307
+background                  66.6        33.4        33.1      49.6     13397
+background-threads          66.4        33.6        32.9      49.3     14045
+verdict: background left the foreground < (crowded it out!) disk throughput than default did
+```
+
+`none` was flat as well, at 50.0% to 50.1% for every class.
+
+- **`bfq` honours the mapping.** `Background` drops from 66.6 MiB/s alone to
+  4.2 MiB/s under contention and the foreground keeps 93.9%, against 49.0% for
+  `Default`. `Utility` (best-effort 6) lands just below it at 89.3%.
+- **`mq-deadline` does nothing with it.** Every class splits the card evenly.
+  `mq-deadline` separates requests by priority class (real-time, best-effort,
+  idle) and ignores the level within a class. `bgrt` keeps all three classes in
+  best-effort and never uses idle, so `mq-deadline` sees one class. The
+  "crowded it out" verdict is a 0.8-point difference between equal rows, which
+  is noise; the current harness reports it as about the same, and notes under
+  `mq-deadline` that the scheduler ignores the level. The class-versus-level
+  test behind this explanation is in
+  [`DESIGN.md`](DESIGN.md#io-priority--in-scope-and-a-class-covers-disk-as-well-as-cpu).
+- **`none` does nothing with it,** as expected.
+
+So on Linux, I/O priority takes effect under `bfq` only. Most distributions
+default to `mq-deadline` for SATA and SD devices and `none` for NVMe, so getting
+the disk half of the class needs `bfq` selected for the device.
+
 ---
 
 # Running the harness
@@ -269,9 +399,10 @@ sudo ./target/release/bgrt-bench --duration 3          # RAPL energy
 ./target/release/bgrt-bench --duration 3 --pin              # hybrid P+E: pin to E-cores
 ./target/release/bgrt-bench --duration 3 --clamp-frequency  # homogeneous: uclamp cap
 
-# Check the prerequisites before trusting a flat result:
+# Check the prerequisites before trusting a flat result. The harness prints the
+# governor above the CPU table and the scheduler above the disk table.
 cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor   # want: schedutil
-cat /sys/block/nvme0n1/queue/scheduler                         # want: bfq or mq-deadline
+cat /sys/block/nvme0n1/queue/scheduler                         # want: bfq
 ```
 
 Windows. Frequency and placement need no privileges, and there is no energy
@@ -293,9 +424,11 @@ counter to elevate for.
 
 The disk workload needs no privileges anywhere, macOS included — no
 `powermetrics` involved. On Linux the result still depends on the I/O scheduler:
-`bfq` honours priority fully, `mq-deadline` partially, and `none` — a common NVMe
-default — not at all. The harness prints the active scheduler, so a flat result
-there can be explained rather than guessed at.
+`bfq` honours priority, while `mq-deadline` and `none` — a common NVMe default —
+showed no effect on the
+[Raspberry Pi 5](#linux-raspberry-pi-5-microsd-ext4-once-per-io-scheduler).
+The harness prints the active scheduler, so a flat result there can be explained
+rather than guessed at.
 
 The library never needs privileges. Only this measurement tool does.
 
@@ -310,27 +443,12 @@ were checked first.
 | # | Machine or configuration | What it settles | Command |
 |--:|---|---|---|
 | 1 | Linux on Intel hybrid (Alder, Raptor, Meteor, or Arrow Lake) | The largest gap. E-core detection through the `cpu_atom` PMU, and `sched_setaffinity` against a non-empty core set, have never executed — they are unit-tested only. `--pin` is untested code rather than a measured feature | `bgrt-bench --duration 3 --pin` |
-| 3 | Linux disk, once per I/O scheduler: `bfq`, `mq-deadline`, `none` | Whether the `ioprio_set` mapping bites, and how much the scheduler choice dominates the result. `none` should show nothing, and confirming that is the point | `bgrt-bench --workload io --duration 3 --workers 4 --io-foreground 4` |
+| 3 | Linux disk on NVMe or SATA SSD under `bfq` | The [Raspberry Pi 5 run](#linux-raspberry-pi-5-microsd-ext4-once-per-io-scheduler) settled the scheduler question on a microSD card: `bfq` honours the mapping, `mq-deadline` and `none` do not. Whether `bfq` still separates the classes on a fast SSD, where its per-request overhead is the reason NVMe defaults to `none`, is unmeasured | `bgrt-bench --workload io --duration 3 --workers 4 --io-foreground 4` |
 | 4 | Linux on arm64 big.LITTLE (an RK3588 board such as Orange Pi 5 or Rock 5B, an Odroid N2+, or Asahi Linux on Apple silicon) | Differing `cpu_capacity` values. CI runs the arm64 read path on a Neoverse N2 runner, but every CPU there reports 1024, so only the all-equal branch executes. A machine with a Cortex-A76 and A55 mix is what makes the detection do work — note that a Raspberry Pi 5, Ampere Altra, and Snapdragon X are all homogeneous and would not | `bgrt-bench --duration 3 --pin` |
 | 5 | Windows on Intel hybrid | The E and P labelling branch in telemetry. CI runners are homogeneous VMs, so the code that marks a core as efficiency-class has only ever been unit-tested. Placement is EcoQoS's job, so this is a telemetry gap rather than a behaviour one | `bgrt-bench --duration 3` |
 | 6 | Apple Silicon after the M1 (M2, M3, M4, and a Pro, Max, or Ultra) | Whether efficiency-core confinement and the power ratio hold as the P-to-E ratio changes | `sudo bgrt-bench --duration 3 --mac-power` |
 | 8 | The same Mac on battery, on AC, and with Low Power Mode on | What picks the efficiency cluster's clock. Three runs on one M1 span 1029 to 2063 MHz and a 13-to-3-times energy ratio (see [above](#the-efficiency-cores-own-clock-varies-between-runs)); which conditions produce which end is unknown | `sudo bgrt-bench --duration 3 --mac-power` |
-| 7 | Any homogeneous Linux machine, with the CPU contended | `nice(19)` does nothing without contention, and every Linux CPU run on record is uncontended, so the CPU half of the class is unproven on Linux | see below |
-
-Row 7 needs two processes. The CPU workload has no foreground-contention mode,
-unlike the disk one, so the contention has to come from outside: run a `default`
-and a `background` harness against the same cores and compare `work/s` against
-each running alone.
-
-```bash
-taskset -c 0-3 ./target/release/bgrt-bench --duration 30 --workers 4 --executors default &
-taskset -c 0-3 ./target/release/bgrt-bench --duration 30 --workers 4 --executors background &
-wait
-```
-
-Adding a foreground-contention mode to the CPU workload, in the shape
-`--workload io` already uses, would turn that into a single run. It has not been
-done.
+| 9 | Linux on a laptop or desktop with deep idle states, timer-heavy idle load | Whether `PR_SET_TIMERSLACK` on `Background` threads saves energy. On a Raspberry Pi 5 it cut wakeups 5 times and left core power unchanged, but the Pi 5 has no cpuidle states, so a wakeup costs it nothing (see [`DESIGN.md`](DESIGN.md#findings-worth-remembering)). Deciding whether to adopt it needs a machine where a wakeup does cost something | needs a timer-heavy harness mode first |
 
 A result is most useful with the full table, the OS and CPU model, and on Linux
 the governor and I/O scheduler from the commands above. A run whose prerequisites

@@ -346,6 +346,21 @@ The harness compares executors on the same workload.
 - **Self-sampling** attributes core placement to the worker actually running.
 - **Missing signals degrade.** Anything the OS or the privilege level cannot
   provide is reported as `n/a` or `None` rather than as an error.
+- **Verdicts have three outcomes.** The closing verdict lines compare
+  `background` with `default` and report better, about the same, or worse. The
+  first version compared peak frequency and `fg_prot%` with no tolerance, and
+  both failed on the Raspberry Pi 5. A clamped run peaked at 2400 MHz like
+  `Default`, from one sample taken before the governor reacted, though its mean
+  was 1509. And two equal disk rows 0.8 points apart printed "crowded it out".
+  The frequency verdict now compares means within 5%, which covers one frequency
+  step on a short run (3592 against 3692 MHz on a Threadripper) and sits well
+  below every clamp effect measured, the smallest being 14%. The disk verdict
+  allows 5 points. The 0.3 s end-to-end test still compares peaks, because at
+  that length the first executor's mean includes the clock's ramp up from idle.
+- **The context for a flat result is printed with it.** On Linux the CPU table
+  names the cpufreq governor, as the disk table names the I/O scheduler, and a
+  `--clamp-frequency` run under anything other than `schedutil` says the clamp
+  could not act. Stock Raspberry Pi images run `ondemand`.
 
 Per-signal availability is tabulated in
 [`BENCHMARKS.md`](BENCHMARKS.md#what-is-measurable-per-platform) and in the
@@ -450,9 +465,27 @@ buys independence from a kernel-internal derivation, intent that is visible in
 here is to measure rather than assume, and the implicit version cannot be
 asserted.
 
-Whether it does anything depends on the I/O scheduler: BFQ honours it fully,
-`mq-deadline` since 5.18, and `none` — a common NVMe default — not at all. Same
-shape of caveat as `uclamp` needing `schedutil`, and documented the same way.
+Whether it does anything depends on the I/O scheduler, and in practice only BFQ
+honours it. `none` — a common NVMe default — ignores priority entirely.
+`mq-deadline` was documented here as honouring it "since 5.18" until a
+Raspberry Pi 5 (kernel 7.0, microSD) showed otherwise. Two direct-I/O readers,
+four threads each, with only the background reader's `ionice` changed:
+
+| scheduler | background at BE 0 | background at BE 7 | background idle-class |
+|---|---|---|---|
+| `mq-deadline` | fg 30 / bg 36 MiB/s | fg 31 / bg 36 | fg 67 / bg 0.1 |
+| `bfq` | fg 28 / bg 39 | fg 55 / bg 12 | fg 67 / bg 0.3 |
+
+The foreground alone reads 67 MiB/s. `mq-deadline` keeps one queue per priority
+class — real-time, best-effort, idle — and ignores the level within a class, so
+best-effort 7 and best-effort 0 look the same to it. The idle class does
+register, and it stops the background reader almost completely, which is the
+starvation this design rules out. So the choice holds, at a price: on
+`mq-deadline` the disk half of the class does nothing. Most distributions use
+`mq-deadline` for SATA and SD devices and `none` for NVMe, so getting the disk
+half on Linux means selecting `bfq` for the device. Same shape of caveat as
+`uclamp` needing `schedutil`, and documented the same way: the harness names the
+scheduler and says why a flat result is flat.
 
 #### Windows, settled by reading rather than by hardware
 
@@ -628,6 +661,32 @@ to re-test, rather than the conclusion drawn from it.
   battery bill per unit of work. macOS efficiency-core placement is the opposite
   case, cutting energy about 2 to 4 times per unit of work. Different levers,
   different economics.
+- **Where cores share a clock, the clamp only works while the domain is
+  otherwise idle.** The Raspberry Pi 5's four cores sit in one cpufreq policy,
+  and the policy runs at the speed its busiest core asks for. A clamped
+  `Background` thread alone ran at 1519 MHz. With an unclamped `Default` thread
+  busy on another core, it ran at 2400 alongside it. That is the kernel working
+  as designed, and many arm64 boards share one policy per cluster. Per-core
+  policies, common on x86, do not have this limit.
+- **Clamping can cut energy per unit of work when the voltage drops with the
+  clock.** On the Raspberry Pi 5, the `VDD_CORE` rail (read from the PMIC)
+  showed `Background` with `--clamp-frequency` at 0.60 W against 0.93 W, and the
+  core voltage fell from 0.844 V to 0.753 V. Above the rail's 0.42 W idle draw,
+  energy per unit of work fell from about 191 µJ to 104. Counting the idle draw,
+  it came out about even. This is a different result from the i7 above, and the
+  difference is the voltage: an operating point that lowers voltage as well as
+  frequency saves energy on the work itself.
+- **Timer slack is an untested idea, not a feature.** `PR_SET_TIMERSLACK` is the
+  nearest Linux equivalent of macOS deferring timers for background threads: it
+  is per-thread, unprivileged, and `epoll_wait`, where an idle tokio worker
+  parks, honours it. On the Raspberry Pi 5, sixteen threads sleeping 1 ms at a
+  time woke 15171 times a second with the default 50 µs slack and 3109 times
+  with 5 ms, and timer interrupts fell from 13154 to 2155 a second. Core power
+  did not change (0.484 W against 0.491 W). The Pi 5 has no cpuidle driver and
+  idles in WFI only, so a wakeup costs it next to nothing. Hardware with deep
+  idle states is where fewer wakeups would show up as energy, and nobody has
+  measured that. Adopting it would also change timing semantics: a `Background`
+  runtime's `sleep(1 ms)` could wake up to 5 ms late.
 - **On macOS the placement repeats; the clock does not.** Three runs of the same
   harness on the same idle M1 put `Background` on the efficiency cores every time
   (about 99%), but those cores ran at 1029, 1284 and 2063 MHz — most of the

@@ -26,9 +26,11 @@
 ///   thread I/O policy permanently opts the thread out of QoS, costing E-core
 ///   confinement. Darwin's bundling is the mechanism, not a coincidence.
 /// - **Linux** — an explicit `ioprio_set` to the best-effort class. Whether it
-///   *bites* depends on the I/O scheduler: BFQ honours it fully, `mq-deadline`
-///   since 5.18, and `none` — a common default for NVMe — ignores it entirely.
-///   It does nothing there rather than something wrong, like the `uclamp` cap.
+///   *bites* depends on the I/O scheduler: BFQ honours it. `mq-deadline` does
+///   not, because it separates priority classes but ignores the level within
+///   best-effort, and `none` — a common default for NVMe — ignores priority
+///   entirely. It does nothing there rather than something wrong, like the
+///   `uclamp` cap.
 /// - **Windows** — `Background` only, via background processing mode
 ///   (`THREAD_MODE_BACKGROUND_BEGIN`), the sole documented per-thread I/O lever.
 ///   `Utility` gets no I/O reduction: the mode is all-or-nothing and would drag

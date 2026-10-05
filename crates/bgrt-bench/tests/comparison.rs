@@ -34,6 +34,9 @@ fn comparison____background_peak_freq____at_most_default_or_skipped() {
             .and_then(|r| r["max_mhz"].as_u64())
     };
 
+    // Peaks, not the means the harness's own verdict uses. At 0.3 s, `default`
+    // runs first from an idle clock, so its mean carries the ramp-up and can sit
+    // 6% under `background`'s on the same clock. Peaks both reach the top.
     match (max_mhz("default"), max_mhz("background")) {
         (Some(default), Some(background)) => {
             assert!(

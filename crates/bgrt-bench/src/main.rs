@@ -7,6 +7,7 @@
 //! randomly, bypassing the page cache, both alone and against a plain foreground
 //! reader. Results are printed as a table or JSON.
 
+mod cpufreq;
 mod io_file;
 mod io_runner;
 mod io_workload;
@@ -26,7 +27,7 @@ use clap::{Parser, ValueEnum};
 use crate::io_file::{CacheBypass, ScratchFile};
 use crate::io_runner::IoPlan;
 use crate::io_workload::IoConfig;
-use crate::report::{IoReport, IoSummary, Summary};
+use crate::report::{IoReport, IoSummary, Summary, Verdict};
 use crate::runner::Executor;
 use crate::workload::WorkloadConfig;
 
@@ -138,8 +139,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Workload::Cpu => None,
     };
 
-    print_results(&args, cpu.as_deref(), io.as_ref())?;
+    let governors = cpufreq::governors();
+    print_results(&args, cpu.as_deref(), governors.as_deref(), io.as_ref())?;
     print_verdicts(cpu.as_deref(), io.as_ref());
+    if cpu.is_some() {
+        note_clamp_governor(&args, governors.as_deref());
+    }
     Ok(())
 }
 
@@ -242,11 +247,16 @@ fn run_io(args: &Args, executors: &[Executor]) -> Result<IoReport, Box<dyn std::
 fn print_results(
     args: &Args,
     cpu: Option<&[Summary]>,
+    governors: Option<&[String]>,
     io: Option<&IoReport>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match args.format {
         Format::Table => {
             if let Some(cpu) = cpu {
+                // Linux only: the context a flat --clamp-frequency result needs.
+                if let Some(governors) = governors {
+                    println!("cpu: governor {}", governors.join(","));
+                }
                 println!("{}", report::table(cpu));
             }
             if let Some(io) = io {
@@ -282,33 +292,68 @@ fn io_preamble(io: &IoReport) -> String {
              cache, so these are not disk numbers. Try --io-dir on a real filesystem.",
         );
     }
-    if io.io_scheduler.as_deref() == Some("none") {
-        out.push_str(
+    match io.io_scheduler.as_deref() {
+        Some("none") => out.push_str(
             "\nnote: the `none` I/O scheduler ignores I/O priority entirely, so a null\n\
-             result here is the scheduler's doing, not the class's. Try bfq or mq-deadline.",
-        );
+             result here is the scheduler's doing, not the class's. Try bfq.",
+        ),
+        Some("mq-deadline") => out.push_str(
+            "\nnote: `mq-deadline` ignores the level within best-effort, which is all bgrt\n\
+             sets, so a null result here is the scheduler's doing. Try bfq.",
+        ),
+        _ => {}
     }
     out
 }
 
+/// Explain, before anyone reads a flat table as a broken clamp, that the
+/// governor cannot act on it. Printed to stderr so JSON output carries it too.
+fn note_clamp_governor(args: &Args, governors: Option<&[String]>) {
+    if !args.clamp_frequency || !cfg!(target_os = "linux") {
+        return;
+    }
+    match governors {
+        None => eprintln!(
+            "note: no cpufreq governor found (common in VMs), so --clamp-frequency \
+             cannot move the clock here."
+        ),
+        Some(governors) if !cpufreq::clamp_can_act(governors) => eprintln!(
+            "note: --clamp-frequency needs the schedutil governor; this machine runs {}.\n      \
+             Switch with: echo schedutil | sudo tee \
+             /sys/devices/system/cpu/cpufreq/policy*/scaling_governor",
+            governors.join(",")
+        ),
+        Some(_) => {}
+    }
+}
+
 fn print_verdicts(cpu: Option<&[Summary]>, io: Option<&IoReport>) {
-    if let Some(cooler) = cpu.and_then(report::background_not_hotter) {
+    if let Some(verdict) = cpu.and_then(report::frequency_verdict) {
         eprintln!(
-            "verdict: background peak frequency {} default",
-            if cooler {
-                "≤ (stayed cool)"
-            } else {
-                "> (ran hot!)"
+            "verdict: background mean frequency {}",
+            match verdict {
+                Verdict::Better => "< default (stayed cool)".to_owned(),
+                Verdict::Same => format!(
+                    "≈ default, within {}% (no frequency difference)",
+                    report::FREQUENCY_TOLERANCE_PCT
+                ),
+                Verdict::Worse => "> default (ran hot!)".to_owned(),
             }
         );
     }
-    if let Some(yielded) = io.and_then(|io| report::background_yields_disk(&io.rows)) {
+    if let Some(verdict) = io.and_then(|io| report::disk_verdict(&io.rows)) {
         eprintln!(
-            "verdict: background left the foreground {} disk throughput than default did",
-            if yielded {
-                "≥ (got out of the way)"
-            } else {
-                "< (crowded it out!)"
+            "verdict: background left the foreground {}",
+            match verdict {
+                Verdict::Better =>
+                    "more disk throughput than default did (got out of the way)".to_owned(),
+                Verdict::Same => format!(
+                    "about the same disk throughput as default did, within {} points \
+                     (no I/O priority effect)",
+                    report::PROTECTION_TOLERANCE_PTS
+                ),
+                Verdict::Worse =>
+                    "less disk throughput than default did (crowded it out!)".to_owned(),
             }
         );
     }

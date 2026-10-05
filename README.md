@@ -127,7 +127,8 @@ Two results are worth reading before picking a class:
 - **On homogeneous Linux, `nice(19)` alone does nothing** without contention. The
   optional `clamp_frequency` (`uclamp`) is the lever there — 840 MHz against
   3192 on a Sandy Bridge i7 — and it needs the `schedutil` governor to have any
-  effect.
+  effect. Where cores share a clock, as on a Raspberry Pi, it holds the clock
+  down only while nothing unclamped is busy on the other cores.
 
 [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) has every table, the commands to run
 the harness on each OS, and the machines still missing from the set.
@@ -154,9 +155,12 @@ and the measurements behind each are in [`docs/DESIGN.md`](docs/DESIGN.md).
   that is already niced (`nice -n 10 …`, systemd `Nice=`), leaves Linux niceness
   where it is. macOS and Windows do restore it.
 - **Some mappings do nothing on some configurations.** Linux `uclamp` needs the
-  `schedutil` governor and kernel 5.8 or newer; Linux I/O priority needs `bfq` or
-  `mq-deadline`, since `none` — a common NVMe default — ignores it. The harness
-  reports the active governor and scheduler so a flat result can be explained.
+  `schedutil` governor and kernel 5.8 or newer; stock Raspberry Pi images ship
+  `ondemand`. Linux I/O priority needs `bfq`: `mq-deadline` ignores the
+  best-effort level that `bgrt` sets, and `none` — a common NVMe default —
+  ignores priority altogether. The builders log at debug level when a requested
+  clamp cannot act, and the harness reports the active governor and scheduler so
+  a flat result can be explained.
 - **Hybrid-Linux E-core pinning is untested code rather than a measured
   feature.** `pin_efficiency_cores` has never run on real P+E silicon. Every
   Linux machine available has been homogeneous, where the feature correctly does

@@ -25,7 +25,7 @@ mod windows;
 
 /// Opt-in Linux utilization clamp (a frequency hint); a no-op on other
 /// platforms. See [`uclamp`] for the rationale.
-pub(crate) use uclamp::clamp_current_thread;
+pub(crate) use uclamp::{clamp_current_thread, note_clamp_governor};
 
 #[cfg(target_os = "macos")]
 pub(crate) fn apply(class: QosClass) -> Result<(), Error> {

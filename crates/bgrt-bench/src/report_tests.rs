@@ -6,7 +6,7 @@ use std::time::Duration;
 use bgrt::telemetry::Aggregate;
 
 use super::{
-    IoReport, IoSummary, Summary, background_not_hotter, background_yields_disk, device_saturated,
+    IoReport, IoSummary, Summary, Verdict, device_saturated, disk_verdict, frequency_verdict,
     io_json, io_table, json, table,
 };
 use crate::io_file::CacheBypass;
@@ -71,22 +71,49 @@ fn from_result____powermetrics_present____fills_placement_and_freq() {
     assert!(s.cpu_power_mw.is_some());
 }
 
-#[test]
-fn background_not_hotter____background_lower____is_some_true() {
-    let s = vec![summ("default", Some(3200)), summ("background", Some(1000))];
-    assert_eq!(background_not_hotter(&s), Some(true));
+fn with_mean(executor: &str, mean_mhz: Option<f64>) -> Summary {
+    Summary {
+        mean_mhz,
+        ..summ(executor, Some(2400))
+    }
 }
 
 #[test]
-fn background_not_hotter____background_higher____is_some_false() {
-    let s = vec![summ("default", Some(1000)), summ("background", Some(3200))];
-    assert_eq!(background_not_hotter(&s), Some(false));
+fn frequency_verdict____background_clamped____is_better() {
+    // Raspberry Pi 5 with --clamp-frequency: equal peaks, very different means.
+    let s = vec![
+        with_mean("default", Some(2400.0)),
+        with_mean("background", Some(1509.0)),
+    ];
+    assert_eq!(frequency_verdict(&s), Some(Verdict::Better));
 }
 
 #[test]
-fn background_not_hotter____missing_frequency____is_none() {
-    let s = vec![summ("default", None), summ("background", Some(1000))];
-    assert_eq!(background_not_hotter(&s), None);
+fn frequency_verdict____background_a_few_mhz_higher____is_same() {
+    // An uncontended homogeneous run: 2400 against 2396 is noise, not "ran hot".
+    let s = vec![
+        with_mean("default", Some(2396.0)),
+        with_mean("background", Some(2400.0)),
+    ];
+    assert_eq!(frequency_verdict(&s), Some(Verdict::Same));
+}
+
+#[test]
+fn frequency_verdict____background_much_higher____is_worse() {
+    let s = vec![
+        with_mean("default", Some(1000.0)),
+        with_mean("background", Some(3200.0)),
+    ];
+    assert_eq!(frequency_verdict(&s), Some(Verdict::Worse));
+}
+
+#[test]
+fn frequency_verdict____missing_frequency____is_none() {
+    let s = vec![
+        with_mean("default", None),
+        with_mean("background", Some(1000.0)),
+    ];
+    assert_eq!(frequency_verdict(&s), None);
 }
 
 #[test]
@@ -161,27 +188,37 @@ fn io_summary____zero_baseline____has_no_protection_figure() {
 }
 
 #[test]
-fn background_yields_disk____background_protects_more____is_some_true() {
+fn disk_verdict____background_protects_more____is_better() {
     let rows = vec![
         io_row(Executor::Default, 400.0, 200.0, 200.0),
         io_row(Executor::Background, 260.0, 2.0, 396.0),
     ];
-    assert_eq!(background_yields_disk(&rows), Some(true));
+    assert_eq!(disk_verdict(&rows), Some(Verdict::Better));
 }
 
 #[test]
-fn background_yields_disk____background_crowds_the_foreground____is_some_false() {
+fn disk_verdict____background_crowds_the_foreground____is_worse() {
     let rows = vec![
         io_row(Executor::Default, 400.0, 200.0, 396.0),
         io_row(Executor::Background, 400.0, 380.0, 100.0),
     ];
-    assert_eq!(background_yields_disk(&rows), Some(false));
+    assert_eq!(disk_verdict(&rows), Some(Verdict::Worse));
 }
 
 #[test]
-fn background_yields_disk____default_missing____is_none() {
+fn disk_verdict____default_missing____is_none() {
     let rows = vec![io_row(Executor::Background, 260.0, 2.0, 396.0)];
-    assert_eq!(background_yields_disk(&rows), None);
+    assert_eq!(disk_verdict(&rows), None);
+}
+
+#[test]
+fn disk_verdict____rows_within_a_point____is_same() {
+    // The Raspberry Pi 5 under mq-deadline: 49.6% against 50.4% is noise.
+    let rows = vec![
+        io_row(Executor::Default, 66.0, 33.0, 201.6),
+        io_row(Executor::Background, 66.0, 33.0, 198.4),
+    ];
+    assert_eq!(disk_verdict(&rows), Some(Verdict::Same));
 }
 
 #[test]

@@ -181,6 +181,12 @@ impl RuntimeBuilder {
     /// untouched. No-op on macOS/Windows (their QoS/EcoQoS throttle frequency
     /// directly), for other classes, and on kernels or governors without uclamp
     /// support. Opt-in; off by default.
+    ///
+    /// Only the `schedutil` governor reads the clamp; `build` logs at debug
+    /// level when no cpufreq policy runs it. Where cores share a clock (a
+    /// Raspberry Pi, many arm64 boards), the domain runs at the speed its
+    /// busiest core asks for, so the clamp holds the clock down only while
+    /// nothing unclamped is busy in that domain.
     #[must_use]
     pub fn clamp_frequency(mut self, clamp: bool) -> Self {
         self.clamp_frequency = clamp;
@@ -214,6 +220,10 @@ impl RuntimeBuilder {
     fn build_multi_thread(self) -> Result<Runtime, Error> {
         let qos = self.qos;
         let clamp_frequency = self.clamp_frequency;
+        // Current-thread mode gets this check from `ThreadBuilder::spawn`.
+        if clamp_frequency {
+            crate::backend::note_clamp_governor(qos);
+        }
         // tokio panics on a worker count of 0; clamp to keep `build` total.
         let workers = self.worker_threads.max(1);
         let efficiency_cores = self.efficiency_cores();

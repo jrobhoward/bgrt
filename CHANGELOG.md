@@ -68,6 +68,16 @@ history, so this file records *what* shipped rather than how it got there.
 - **The rayon pool calls the shared `thread::classify`** instead of reimplementing
   the qos → pin → clamp sequence, so a future knob cannot reach two builders and
   silently skip the third.
+- **The builders log at debug level when a requested clamp cannot act** — no
+  cpufreq policy runs `schedutil`, or there is no cpufreq at all. The syscall
+  succeeds under any governor, so the clamp was otherwise silent either way.
+- **Harness verdicts are three-way and tolerance-banded.** The CPU verdict
+  compares mean frequency within 5% instead of peak frequency, and the disk
+  verdict allows 5 points of `fg_prot%`; rows inside the band read as "about the
+  same" rather than a win or a loss decided by noise.
+- **The harness prints the cpufreq governor** above the Linux CPU table, warns
+  when `--clamp-frequency` runs under anything other than `schedutil`, and
+  explains a flat disk result under `mq-deadline`.
 
 ### Fixed
 
@@ -91,6 +101,9 @@ history, so this file records *what* shipped rather than how it got there.
 - **The disk workload could record zero reads** when one slow read straddled a
   short measurement window, reporting an executor as broken rather than slow.
   Every worker now counts at least one read.
+- **The harness told users to try `mq-deadline`** for a flat disk result under
+  `none`. `mq-deadline` ignores the best-effort level that `bgrt` sets, so it
+  gives the same flat result; the hint now names `bfq` only.
 - **macOS: `setiopolicy_np` is never called.** Setting an explicit I/O policy
   permanently opts the thread out of QoS — measured — costing E-core confinement
   and the power result that depends on it. Implementation reverted; a regression
@@ -126,3 +139,11 @@ history, so this file records *what* shipped rather than how it got there.
   Windows performance story are labelled untested; `uclamp` and Linux I/O priority
   do nothing under some governors and I/O schedulers; classification does not
   follow threads that dependencies spawn, except on Linux.
+- Linux I/O priority was documented as honoured by `mq-deadline` since 5.18. A
+  Raspberry Pi 5 on kernel 7.0 showed `mq-deadline` honouring the priority class
+  but not the best-effort level, so only `bfq` gives `bgrt`'s mapping an effect.
+  Corrected in the README, `DESIGN.md`, and the `qos` and `ioprio` rustdoc.
+- Raspberry Pi 5 results: tests and clippy on real arm64, the frequency clamp
+  with PMIC rail power, the first contended Linux CPU run, and the disk workload
+  under each I/O scheduler. The clamp's limit where cores share a clock is
+  documented alongside them.

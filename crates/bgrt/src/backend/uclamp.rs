@@ -120,6 +120,52 @@ pub(crate) fn clamp_current_thread(
     Ok(())
 }
 
+/// Whether a cpufreq governor reads the utilization signal that a uclamp cap
+/// lowers. Only `schedutil` does; `intel_pstate=passive` also reports itself as
+/// `schedutil`. `ondemand`, `performance`, `powersave` and the rest pick clocks
+/// from their own load sampling, so the cap has nothing to act on.
+#[cfg(target_os = "linux")]
+fn governor_honours_clamp(governor: &str) -> bool {
+    governor.trim() == "schedutil"
+}
+
+/// Log, at debug level, when a frequency clamp requested for `class` cannot take
+/// effect because no cpufreq policy runs `schedutil`, or there is no cpufreq at
+/// all (most VMs).
+///
+/// Called once per build by the builders, on the spawning thread, rather than on
+/// every worker. The syscall itself succeeds under any governor, so without this
+/// a clamp that does nothing is indistinguishable from one that works. Stock
+/// Raspberry Pi images ship `ondemand`, for example.
+#[cfg(target_os = "linux")]
+pub(crate) fn note_clamp_governor(class: QosClass) {
+    if util_max_for(class).is_none() {
+        return;
+    }
+    let mut governors: Vec<String> = std::fs::read_dir("/sys/devices/system/cpu/cpufreq")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("policy"))
+        .filter_map(|entry| std::fs::read_to_string(entry.path().join("scaling_governor")).ok())
+        .map(|governor| governor.trim().to_owned())
+        .collect();
+    governors.sort_unstable();
+    governors.dedup();
+    if governors.is_empty() {
+        tracing::debug!("bgrt: no cpufreq policies found; clamp_frequency will have no effect");
+    } else if !governors.iter().any(|g| governor_honours_clamp(g)) {
+        tracing::debug!(
+            governors = %governors.join(","),
+            "bgrt: clamp_frequency needs the schedutil governor; it will have no effect"
+        );
+    }
+}
+
+/// No uclamp off Linux, so nothing to check.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn note_clamp_governor(_class: crate::qos::QosClass) {}
+
 #[cfg(all(test, target_os = "linux"))]
 #[path = "uclamp_tests.rs"]
 mod uclamp_tests;

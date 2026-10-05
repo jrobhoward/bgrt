@@ -1,5 +1,7 @@
 //! Formatting the comparison results as a table or JSON, plus the
 //! "did the low-priority class stay cooler?" and "did it yield the disk?" checks.
+//! Both checks allow a tolerance band, so equal rows read as "no difference"
+//! rather than as a win or a loss decided by noise.
 
 use serde::Serialize;
 
@@ -112,16 +114,56 @@ pub fn json(summaries: &[Summary]) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(summaries)
 }
 
-/// Whether the `background` executor's peak frequency stayed at or below the
-/// `default` executor's — the "didn't spin up the fans" check.
+/// How the `background` executor compared with `default` on a verdict's measure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Background did better by more than the tolerance.
+    Better,
+    /// Within the tolerance: no difference worth reporting.
+    Same,
+    /// Background did worse by more than the tolerance.
+    Worse,
+}
+
+impl Verdict {
+    /// Classify `advantage` (positive means background did better) against a
+    /// symmetric tolerance band.
+    fn from_advantage(advantage: f64, tolerance: f64) -> Self {
+        if advantage > tolerance {
+            Self::Better
+        } else if advantage < -tolerance {
+            Self::Worse
+        } else {
+            Self::Same
+        }
+    }
+}
+
+/// Mean-frequency difference, as a percentage of `default`'s, that counts as
+/// "the same". Short runs at the same clock can differ by one frequency step
+/// (3592 against 3692 MHz on a Threadripper, about 2.7%); every clamp effect
+/// measured so far is 14% or more.
+pub const FREQUENCY_TOLERANCE_PCT: f64 = 5.0;
+
+/// Whether the `background` executor ran at a lower mean frequency than
+/// `default` — the "didn't spin up the fans" check.
 ///
-/// Returns `None` if either executor is absent or lacks frequency data (e.g. on
-/// macOS without `powermetrics`), so callers can skip rather than fail.
-pub fn background_not_hotter(summaries: &[Summary]) -> Option<bool> {
+/// Compares means, not peaks: a single early sample taken before the governor
+/// reacts can match `default`'s peak even when a clamp holds the rest of the
+/// run 37% lower. Returns `None` if either executor is absent or lacks
+/// frequency data (e.g. on macOS without `powermetrics`), so callers can skip
+/// rather than fail.
+pub fn frequency_verdict(summaries: &[Summary]) -> Option<Verdict> {
     let find = |label: &str| summaries.iter().find(|s| s.executor == label);
-    let bg = find("background")?;
-    let def = find("default")?;
-    Some(bg.max_mhz? <= def.max_mhz?)
+    let bg = find("background")?.mean_mhz?;
+    let def = find("default")?.mean_mhz?;
+    if def <= 0.0 {
+        return None;
+    }
+    Some(Verdict::from_advantage(
+        (def - bg) / def * 100.0,
+        FREQUENCY_TOLERANCE_PCT,
+    ))
 }
 
 fn opt(v: Option<String>) -> String {
@@ -261,16 +303,20 @@ pub fn device_saturated(rows: &[IoSummary]) -> bool {
         .is_none_or(|pct| pct <= SATURATION_PCT)
 }
 
+/// `fg_prot%` difference, in percentage points, that counts as "the same". Equal
+/// rows on a saturated microSD card differ by about one point between phases.
+pub const PROTECTION_TOLERANCE_PTS: f64 = 5.0;
+
 /// Whether the `background` executor left the foreground more disk than the
 /// `default` executor did — the "low-priority work yields the device" check.
 ///
 /// Returns `None` if either executor is absent or the baseline was unmeasurable,
 /// so callers can skip rather than fail.
-pub fn background_yields_disk(rows: &[IoSummary]) -> Option<bool> {
+pub fn disk_verdict(rows: &[IoSummary]) -> Option<Verdict> {
     let find = |label: &str| rows.iter().find(|s| s.executor == label);
-    let bg = find("background")?;
-    let def = find("default")?;
-    Some(bg.foreground_protection_pct? >= def.foreground_protection_pct?)
+    let bg = find("background")?.foreground_protection_pct?;
+    let def = find("default")?.foreground_protection_pct?;
+    Some(Verdict::from_advantage(bg - def, PROTECTION_TOLERANCE_PTS))
 }
 
 #[cfg(test)]

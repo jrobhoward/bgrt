@@ -135,6 +135,12 @@ impl ThreadBuilder {
     /// leaves frequency untouched. No-op on macOS/Windows (their QoS/EcoQoS
     /// throttle frequency directly), for other classes, and on kernels or
     /// governors without uclamp support. Opt-in; off by default.
+    ///
+    /// Only the `schedutil` governor reads the clamp; `spawn` logs at debug
+    /// level when no cpufreq policy runs it. Where cores share a clock (a
+    /// Raspberry Pi, many arm64 boards), the domain runs at the speed its
+    /// busiest core asks for, so the clamp holds the clock down only while
+    /// nothing unclamped is busy in that domain.
     #[must_use]
     pub fn clamp_frequency(mut self, clamp: bool) -> Self {
         self.clamp_frequency = clamp;
@@ -155,6 +161,9 @@ impl ThreadBuilder {
     {
         let qos = self.qos;
         let clamp_frequency = self.clamp_frequency;
+        if clamp_frequency {
+            crate::backend::note_clamp_governor(qos);
+        }
         let efficiency_cores = if self.pin_efficiency_cores {
             topology::efficiency_cores()
         } else {
